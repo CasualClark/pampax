@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "pampax-oak": {
+      "command": "npx",
+      "args": ["-y", "github:casual-oak/pampax", "mcp"],
+      "env": {
+        "OPENAI_API_KEY": "your-openai-api-key-here"
+      }
+    }
+  }
+}

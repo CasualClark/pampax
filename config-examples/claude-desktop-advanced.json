@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "pampax-oak": {
+      "command": "npx",
+      "args": ["-y",         "github:casual-oak/pampax", "mcp"],
+      "env": {
+        "OPENAI_API_KEY": "sk-your-openai-key-here",
+        "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        "PAMPAX_OPENAI_EMBEDDING_MODEL": "text-embedding-3-small",
+        "PAMPAX_MAX_TOKENS": "8192",
+        "PAMPAX_DIMENSIONS": "1536",
+        "PAMPAX_DEBUG": "false",
+        "PAMPAX_HYBRID_SEARCH": "true",
+        "PAMPAX_RERANKER": "transformers"
+      }
+    }
+  }
+}

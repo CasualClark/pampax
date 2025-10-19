@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "pampax-oak": {
+      "command": "npx",
+      "args": [
+        "github:casual-oak/pampax",
+        "/home/oakley/mcps/pampax"
+      ],
+      "env": {
+        "PAMPAX_PROVIDER": "openai",
+        "PAMPAX_MODEL": "gpt-4o",
+        "PAMPAX_API_KEY": "your-openai-api-key-here"
+      }
+    }
+  }
+}
