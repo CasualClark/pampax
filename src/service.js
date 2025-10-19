@@ -17,6 +17,7 @@ import LangC from 'tree-sitter-c';
 import LangCSharp from 'tree-sitter-c-sharp';
 import LangCpp from 'tree-sitter-cpp';
 import LangCSS from 'tree-sitter-css';
+import LangDart from 'tree-sitter-dart';
 import LangElixir from 'tree-sitter-elixir';
 import LangGo from 'tree-sitter-go';
 import LangHaskell from 'tree-sitter-haskell';
@@ -99,6 +100,7 @@ const RESOLVED_LANGUAGES = {
     csharp: resolveTreeSitterLanguage(LangCSharp),
     cpp: resolveTreeSitterLanguage(LangCpp),
     css: resolveTreeSitterLanguage(LangCSS),
+    dart: resolveTreeSitterLanguage(LangDart),
     elixir: resolveTreeSitterLanguage(LangElixir),
     go: resolveTreeSitterLanguage(LangGo),
     haskell: resolveTreeSitterLanguage(LangHaskell),
@@ -382,6 +384,19 @@ const LANG_RULES = {
         },
         variableTypes: [],
         commentPattern: /\/\*[\s\S]*?\*\//g
+    },
+    '.dart': {
+        lang: 'dart',
+        ts: RESOLVED_LANGUAGES.dart,
+        nodeTypes: ['function_signature', 'class_definition', 'method_declaration', 'constructor_signature', 'mixin_declaration', 'enum_declaration', 'extension_declaration'],
+        subdivisionTypes: {
+            'class_definition': ['function_signature', 'method_declaration'],
+            'mixin_declaration': ['function_signature', 'method_declaration'],
+            'extension_declaration': ['function_signature', 'method_declaration'],
+            'function_signature': ['if_statement', 'try_statement', 'for_statement', 'while_statement', 'switch_statement']
+        },
+        variableTypes: ['variable_declaration', 'top_level_variable_declaration', 'initialized_variable_declaration', 'field_declaration'],
+        commentPattern: /\/\/\/.*|\/\*\*[\s\S]*?\*\//g
     },
     '.json': {
         lang: 'json',

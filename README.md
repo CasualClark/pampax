@@ -147,7 +147,7 @@ async function createStripeCheckoutSession(sessionData) {
 
 ## 📝 Supported Languages
 
-PAMPAX can index and search code in 21 languages out of the box:
+PAMPAX can index and search code in 22 languages out of the box:
 
 ### Programming Languages
 -   **JavaScript / TypeScript** (`.js`, `.ts`, `.tsx`, `.jsx`)
@@ -163,6 +163,7 @@ PAMPAX can index and search code in 21 languages out of the box:
 -   **Ruby** (`.rb`) ⭐ _NEW_
 -   **Scala** (`.scala`) ⭐ _NEW_
 -   **Swift** (`.swift`) ⭐ _NEW_
+-   **Dart** (`.dart`) ⭐ _NEW_
 -   **Lua** (`.lua`) ⭐ _NEW_
 -   **OCaml** (`.ml`, `.mli`) ⭐ _NEW_
 -   **Haskell** (`.hs`) ⭐ _NEW_
