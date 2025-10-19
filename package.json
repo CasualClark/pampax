@@ -1,28 +1,32 @@
 {
-	"name": "pampax",
-	"version": "1.15.1",
-	"description": "PAMPAX – Protocol for Augmented Memory of Project Artifacts Extended (MCP compatible)",
-	"author": "Lamim",
+	"name": "@casualclark/pampax",
+	"version": "1.15.1-oak.1",
+	"description": "Casual Oak's PAMPAX Fork – Enhanced with Dart/Flutter support and improved MCP integration",
+	"author": "Casual Oak",
 	"type": "module",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/lemon07r/pampax.git"
+		"url": "https://github.com/CasualClark/pampax.git"
 	},
-	"homepage": "https://github.com/lemon07r/pampax#readme",
+	"homepage": "https://github.com/CasualClark/pampax#readme",
 	"bugs": {
-		"url": "https://github.com/lemon07r/pampax/issues"
+		"url": "https://github.com/CasualClark/pampax/issues"
 	},
 	"bin": {
 		"pampax": "src/cli.js",
-		"pampax-mcp": "src/mcp-server.js"
+		"pampax-mcp": "src/mcp-server.js",
+		"pampax-oak": "src/cli.js"
 	},
 	"files": [
 		"src/",
 		"README.md",
+		"README_OAK.md",
 		"README_es.md",
 		"README_FOR_AGENTS.md",
-		"RULE_FOR_PAMPAX_MCP.md"
+		"RULE_FOR_PAMPAX_MCP.md",
+		"SETUP_GUIDE.md",
+		"CHANGELOG_OAK.md"
 	],
 	"scripts": {
 		"index": "node src/cli.js index",
