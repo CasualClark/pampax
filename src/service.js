@@ -38,7 +38,8 @@ import LangTSX from 'tree-sitter-typescript/bindings/node/tsx.js';
 import LangTS from 'tree-sitter-typescript/bindings/node/typescript.js';
 import { promisify } from 'util';
 import { createEmbeddingProvider, getModelProfile, countChunkSize, getSizeLimits } from './providers.js';
-import {  analyzeNodeForChunking, extractParentContext, yieldStatementChunks } from './chunking/semantic-chunker.js';
+import {  analyzeNodeForChunking, batchAnalyzeNodes, extractParentContext, yieldStatementChunks } from './chunking/semantic-chunker.js';
+import { getTokenCountStats } from './chunking/token-counter.js';
 import { readCodemap, writeCodemap } from './codemap/io.js';
 import { normalizeChunkMetadata } from './codemap/types.js';
 import { applyScope, normalizeScopeFilters } from './search/applyScope.js';
@@ -1043,7 +1044,17 @@ export async function indexProject({
                 '**/.yarn/**',
                 '**/Library/**',
                 '**/System/**',
-                '**/.Trash/**'
+                '**/.Trash/**',
+                '**/.pampa/**',
+                '**/pampa.codemap.json',
+                '**/pampa.codemap.json.backup-*',
+                '**/package-lock.json',
+                '**/yarn.lock',
+                '**/pnpm-lock.yaml',
+                '**/*.json',              // Exclude JSON config files (excessive granularity)
+                '**/*.sh',                // Exclude shell scripts (command-level chunking too granular)
+                '**/examples/**',
+                '**/assets/**'
             ],
             onlyFiles: true,
             dot: false
@@ -1103,6 +1114,16 @@ export async function indexProject({
         console.log(`  ✓ Token counting enabled`);
     } else {
         console.log(`  ℹ Using character estimation (token counting unavailable)`);
+    }
+    
+    // Display rate limiting info
+    if (embeddingProvider.rateLimiter) {
+        const rateLimiterStats = embeddingProvider.rateLimiter.getStats();
+        if (rateLimiterStats.isLimited) {
+            console.log(`  🔒 Rate limiting: ${rateLimiterStats.rpm} requests/minute`);
+        } else {
+            console.log(`  ⚡ Rate limiting: disabled (local model)`);
+        }
     }
     console.log('');
 
@@ -1173,6 +1194,16 @@ export async function indexProject({
     const parser = new Parser();
     let processedChunks = 0;
     const errors = [];
+    
+    // Chunking statistics
+    const chunkingStats = {
+        totalNodes: 0,
+        skippedSmall: 0,
+        subdivided: 0,
+        statementFallback: 0,
+        normalChunks: 0,
+        mergedSmall: 0
+    };
 
     async function deleteChunks(chunkIds, metadataLookup = new Map()) {
         if (!Array.isArray(chunkIds) || chunkIds.length === 0) {
@@ -1354,7 +1385,15 @@ export async function indexProject({
                 throw parseError;
             }
 
+            // Track processed nodes to avoid double-processing from subdivision
+            const processedNodes = new Set();
+            
             async function walk(node) {
+                // Skip if this node was already processed as part of a subdivision
+                if (processedNodes.has(node.id)) {
+                    return;
+                }
+                
                 if (rule.nodeTypes.includes(node.type)) {
                     await yieldChunk(node);
                 }
@@ -1366,7 +1405,113 @@ export async function indexProject({
                 }
             }
 
-            async function yieldChunk(node) {
+            async function yieldChunk(node, parentNode = null) {
+                chunkingStats.totalNodes++;
+                
+                // ===== TOKEN-AWARE CHUNKING: Check size before processing =====
+                // Analyze the node to determine if it needs subdivision
+                const analysis = await analyzeNodeForChunking(node, source, rule, modelProfile);
+                
+                // Skip chunks that are too small (unless they're top-level)
+                if (analysis.size < limits.min && parentNode !== null) {
+                    // Skip this chunk - it's too small and not a top-level symbol
+                    chunkingStats.skippedSmall++;
+                    return;
+                }
+                
+                // If chunk is within optimal range, process normally
+                // If chunk is too large, subdivide it
+                if (analysis.needsSubdivision && analysis.subdivisionCandidates.length > 0) {
+                    // Try to subdivide into smaller semantic chunks
+                    chunkingStats.subdivided++;
+                    
+                    // ===== OPTIMIZATION: Batch analyze all subdivision candidates at once =====
+                    const subAnalyses = await batchAnalyzeNodes(
+                        analysis.subdivisionCandidates,
+                        source,
+                        rule,
+                        modelProfile,
+                        true  // isSubdivision = true (allows safe estimate optimizations)
+                    );
+                    
+                    // Collect small chunks that will be skipped in subdivision
+                    const smallChunks = [];
+                    
+                    for (let i = 0; i < subAnalyses.length; i++) {
+                        const subAnalysis = subAnalyses[i];
+                        const subNode = subAnalysis.node;
+                        
+                        if (subAnalysis.size < limits.min) {
+                            // This subdivision is too small - collect it for merging
+                            const subCode = source.slice(subNode.startIndex, subNode.endIndex);
+                            smallChunks.push({
+                                node: subNode,
+                                code: subCode,
+                                size: subAnalysis.size
+                            });
+                            // Still mark as processed to avoid double-processing
+                            processedNodes.add(subNode.id);
+                        } else {
+                            // Process normal-sized subdivisions
+                            processedNodes.add(subNode.id);
+                            await yieldChunk(subNode, node);
+                        }
+                    }
+                    
+                    // If we have small chunks, merge them into a single chunk
+                    if (smallChunks.length > 0) {
+                        const totalSmallSize = smallChunks.reduce((sum, c) => sum + c.size, 0);
+                        
+                        // If merged size is meaningful, create a combined chunk
+                        if (totalSmallSize >= limits.min || smallChunks.length >= 3) {
+                            const mergedCode = smallChunks.map(c => c.code).join('\n\n');
+                            // Create a pseudo-node for the merged chunk using parent's position
+                            const mergedNode = {
+                                ...node,
+                                type: `${node.type}_merged`,
+                                startIndex: smallChunks[0].node.startIndex,
+                                endIndex: smallChunks[smallChunks.length - 1].node.endIndex
+                            };
+                            const suffix = `small_methods_${smallChunks.length}`;
+                            
+                            chunkingStats.mergedSmall++;
+                            await processChunk(mergedNode, mergedCode, suffix, parentNode);
+                        } else {
+                            // Still too small even when merged - truly skip
+                            chunkingStats.skippedSmall += smallChunks.length;
+                        }
+                    }
+                    
+                    return;
+                } else if (analysis.size > limits.max) {
+                    // Node is too large but has no subdivision candidates
+                    // Fall back to statement-level chunking
+                    chunkingStats.statementFallback++;
+                    const code = source.slice(node.startIndex, node.endIndex);
+                    const statementChunks = await yieldStatementChunks(
+                        node, 
+                        source, 
+                        limits.max, 
+                        limits.overlap, 
+                        modelProfile
+                    );
+                    
+                    // Process each statement-level chunk
+                    for (let i = 0; i < statementChunks.length; i++) {
+                        const stmtChunk = statementChunks[i];
+                        await processChunk(node, stmtChunk.code, `${i + 1}`, parentNode);
+                    }
+                    return;
+                }
+                
+                // Chunk is good size - process it normally
+                chunkingStats.normalChunks++;
+                const code = source.slice(node.startIndex, node.endIndex);
+                await processChunk(node, code, null, parentNode);
+            }
+            
+            // Helper function to process a single chunk
+            async function processChunk(node, code, suffix = null, parentNode = null) {
                 // More robust function to extract symbol name
                 function extractSymbolName(node, source) {
                     // Try different ways to get the name according to node type
@@ -1462,10 +1607,13 @@ export async function indexProject({
                     return `${node.type}_${node.startIndex}`;
                 }
 
-                const symbol = extractSymbolName(node, source);
+                let symbol = extractSymbolName(node, source);
                 if (!symbol) return;
-
-                const code = source.slice(node.startIndex, node.endIndex);
+                
+                // Add suffix for statement-level chunks
+                if (suffix) {
+                    symbol = `${symbol}_part${suffix}`;
+                }
 
                 // ===== ENHANCED METADATA EXTRACTION =====
 
@@ -1506,7 +1654,9 @@ export async function indexProject({
                     endLine: source.slice(0, node.endIndex).split('\n').length,
                     codeLength: code.length,
                     hasDocumentation: !!docComments,
-                    variableCount: importantVariables.length
+                    variableCount: importantVariables.length,
+                    isSubdivision: !!suffix,
+                    hasParentContext: !!parentNode
                 };
 
                 const sha = crypto.createHash('sha1').update(code).digest('hex');
@@ -1656,13 +1806,52 @@ export async function indexProject({
     attachSymbolGraphToCodemap(codemap);
     codemap = writeCodemap(codemapPath, codemap);
 
+    // Get token counting performance stats
+    const tokenStats = getTokenCountStats();
+    
+    // Log chunking statistics
+    if (chunkingStats.totalNodes > 0) {
+        console.log(`\n📈 Chunking Statistics:`);
+        console.log(`  Total AST nodes analyzed: ${chunkingStats.totalNodes}`);
+        console.log(`  Normal chunks (optimal size): ${chunkingStats.normalChunks}`);
+        console.log(`  Subdivided (too large): ${chunkingStats.subdivided}`);
+        console.log(`  Merged small chunks: ${chunkingStats.mergedSmall}`);
+        console.log(`  Statement-level fallback: ${chunkingStats.statementFallback}`);
+        console.log(`  Skipped (too small): ${chunkingStats.skippedSmall}`);
+        console.log(`  Final chunk count: ${processedChunks}`);
+        
+        const reductionRatio = chunkingStats.totalNodes > 0 
+            ? ((1 - processedChunks / chunkingStats.totalNodes) * 100).toFixed(1)
+            : 0;
+        console.log(`  Chunk reduction: ${reductionRatio}% fewer chunks vs naive approach`);
+        console.log('');
+    }
+    
+    // Log token counting performance stats (if token counting was used)
+    if (modelProfile.useTokens && tokenStats.totalRequests > 0) {
+        console.log(`⚡ Token Counting Performance:`);
+        console.log(`  Total size checks: ${tokenStats.totalRequests}`);
+        console.log(`  Character pre-filter: ${tokenStats.charFilterRate} (${tokenStats.charFilterSkips} skipped)`);
+        console.log(`  Cache hits: ${tokenStats.cacheHitRate} (${tokenStats.cacheHits} cached)`);
+        console.log(`  Actual tokenizations: ${tokenStats.actualTokenizations}`);
+        console.log(`  Batch operations: ${tokenStats.batchTokenizations}`);
+        
+        const efficiency = tokenStats.totalRequests > 0
+            ? (((tokenStats.charFilterSkips + tokenStats.cacheHits) / tokenStats.totalRequests) * 100).toFixed(1)
+            : 0;
+        console.log(`  Overall efficiency: ${efficiency}% avoided expensive tokenization`);
+        console.log('');
+    }
+
     // Return structured result
     return {
         success: true,
         processedChunks,
         totalChunks: Object.keys(codemap).length,
         provider: embeddingProvider.getName(),
-        errors
+        errors,
+        chunkingStats,
+        tokenStats: modelProfile.useTokens ? tokenStats : undefined
     };
 }
 

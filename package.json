@@ -1,8 +1,8 @@
 {
-	"name": "@casualclark/pampax",
-	"version": "1.15.1-oak.1",
-	"description": "Casual Oak's PAMPAX Fork – Enhanced with Dart/Flutter support and improved MCP integration",
-	"author": "Casual Oak",
+	"name": "pampax",
+	"version": "1.15.7",
+	"description": "PAMPAX – Protocol for Augmented Memory of Project Artifacts Extended (MCP compatible)",
+	"author": "Lamim",
 	"type": "module",
 	"license": "MIT",
 	"repository": {
