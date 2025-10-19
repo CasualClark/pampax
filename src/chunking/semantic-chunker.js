@@ -4,6 +4,8 @@
  * Hierarchical, AST-aware code chunking for better embedding quality
  */
 
+import { analyzeCodeSize, batchAnalyzeCodeSize } from './token-counter.js';
+
 // ============================================================================
 // CORE SEMANTIC CHUNKING
 // ============================================================================
@@ -88,28 +90,78 @@ export function getLineNumber(byteOffset, source) {
 // ============================================================================
 
 export async function analyzeNodeForChunking(node, source, rule, profile) {
-    const size = node.endIndex - node.startIndex;
     const code = source.slice(node.startIndex, node.endIndex);
-    
-    // Get size in appropriate units (tokens or chars)
-    let actualSize;
-    if (profile.useTokens && profile.tokenCounter) {
-        const result = profile.tokenCounter(code);
-        actualSize = result instanceof Promise ? await result : result;
-    } else {
-        actualSize = size;
-    }
-    
     const limits = getSizeLimits(profile);
     
+    // Use optimized hybrid approach if token counting is enabled
+    let actualSize, method;
+    if (profile.useTokens && profile.tokenCounter) {
+        const analysis = await analyzeCodeSize(code, limits, profile.tokenCounter);
+        actualSize = analysis.size;
+        method = analysis.method;
+    } else {
+        // Fallback to character count
+        actualSize = code.length;
+        method = 'chars';
+    }
+    
+    // CRITICAL FIX: Only subdivide when exceeding MAX, not OPTIMAL
+    // Keeps semantic units (functions/methods) whole for better context
+    // Only split truly large functions that won't fit in the model
+    const subdivisionThreshold = limits.max;
+    
     return {
-        isSingleChunk: actualSize <= limits.optimal,
-        needsSubdivision: actualSize > limits.optimal,
+        isSingleChunk: actualSize <= subdivisionThreshold,
+        needsSubdivision: actualSize > subdivisionThreshold,
         subdivisionCandidates: findSemanticSubdivisions(node, rule),
         size: actualSize,
         unit: limits.unit,
+        method,
         estimatedSubchunks: Math.ceil(actualSize / limits.optimal)
     };
+}
+
+/**
+ * Batch analyze multiple nodes at once (much faster than individual analysis)
+ * 
+ * @param {boolean} isSubdivision - True if analyzing subdivision candidates (allows estimates)
+ */
+export async function batchAnalyzeNodes(nodes, source, rule, profile, isSubdivision = false) {
+    const codes = nodes.map(node => source.slice(node.startIndex, node.endIndex));
+    const limits = getSizeLimits(profile);
+    
+    // Use optimized batch approach if token counting is enabled
+    let analyses;
+    if (profile.useTokens && profile.tokenCounter) {
+        // Only allow estimates for subdivision candidates (safe to skip 'too_large')
+        // For main chunks, always tokenize to avoid data loss
+        analyses = await batchAnalyzeCodeSize(codes, limits, profile.tokenCounter, isSubdivision);
+    } else {
+        // Fallback to character count
+        analyses = codes.map(code => ({
+            size: code.length,
+            decision: code.length < limits.min ? 'too_small' 
+                    : code.length > limits.max ? 'too_large'
+                    : code.length <= limits.optimal ? 'optimal'
+                    : 'needs_subdivision',
+            method: 'chars'
+        }));
+    }
+    
+    return nodes.map((node, i) => {
+        const analysis = analyses[i];
+        const subdivisionThreshold = limits.max;
+        return {
+            node,
+            isSingleChunk: analysis.size <= subdivisionThreshold,
+            needsSubdivision: analysis.size > subdivisionThreshold,
+            subdivisionCandidates: findSemanticSubdivisions(node, rule),
+            size: analysis.size,
+            unit: limits.unit,
+            method: analysis.method,
+            estimatedSubchunks: Math.ceil(analysis.size / limits.optimal)
+        };
+    });
 }
 
 function getSizeLimits(profile) {
