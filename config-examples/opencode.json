@@ -3,7 +3,7 @@
     "pampax-oak": {
       "command": "npx",
       "args": [
-        "github:casual-oak/pampax",
+        "github:CasualClark/pampax",
         "/home/oakley/mcps/pampax"
       ],
       "env": {
