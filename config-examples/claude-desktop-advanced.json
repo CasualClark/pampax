@@ -2,7 +2,7 @@
   "mcpServers": {
     "pampax-oak": {
       "command": "npx",
-      "args": ["-y",         "github:CasualClark/pampax", "mcp"],
+      "args": ["-y", "github:CasualClark/pampax", "mcp"],
       "env": {
         "OPENAI_API_KEY": "sk-your-openai-key-here",
         "OPENAI_BASE_URL": "https://api.openai.com/v1",

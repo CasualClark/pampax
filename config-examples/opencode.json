@@ -2,10 +2,7 @@
   "mcpServers": {
     "pampax-oak": {
       "command": "npx",
-      "args": [
-        "github:CasualClark/pampax",
-        "/home/oakley/mcps/pampax"
-      ],
+      "args": ["-y", "github:CasualClark/pampax", "mcp"],
       "env": {
         "PAMPAX_PROVIDER": "openai",
         "PAMPAX_MODEL": "gpt-4o",
