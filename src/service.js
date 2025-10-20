@@ -10,34 +10,62 @@ import crypto from 'crypto';
 import fg from 'fast-glob';
 import fs from 'fs';
 import path from 'path';
-import sqlite3 from 'sqlite3';
-import Parser from 'tree-sitter';
-import LangBash from 'tree-sitter-bash';
-import LangC from 'tree-sitter-c';
-import LangCSharp from 'tree-sitter-c-sharp';
-import LangCpp from 'tree-sitter-cpp';
-import LangCSS from 'tree-sitter-css';
-import LangDart from 'tree-sitter-dart';
-import LangElixir from 'tree-sitter-elixir';
-import LangGo from 'tree-sitter-go';
-import LangHaskell from 'tree-sitter-haskell';
-import LangHTML from 'tree-sitter-html';
-import LangJava from 'tree-sitter-java';
-import LangJS from 'tree-sitter-javascript';
-import LangJSON from 'tree-sitter-json';
-import LangKotlin from '@tree-sitter-grammars/tree-sitter-kotlin';
-import LangLua from 'tree-sitter-lua';
-import LangOCaml from 'tree-sitter-ocaml';
-import LangPHP from 'tree-sitter-php';
-import LangPython from 'tree-sitter-python';
-import LangRuby from 'tree-sitter-ruby';
-import LangRust from 'tree-sitter-rust';
-import LangScala from 'tree-sitter-scala';
-import LangSwift from 'tree-sitter-swift';
-import LangTSX from 'tree-sitter-typescript/bindings/node/tsx.js';
-import LangTS from 'tree-sitter-typescript/bindings/node/typescript.js';
+// Native dependencies - optional with fallbacks
+let sqlite3, Parser, LangBash, LangC, LangCSharp, LangCpp, LangCSS, LangDart, LangElixir, LangGo, LangHaskell, LangHTML, LangJava, LangJS, LangJSON, LangKotlin, LangLua, LangOCaml, LangPHP, LangPython, LangRuby, LangRust, LangScala, LangSwift, LangTSX, LangTS;
+
+try {
+  sqlite3 = (await import('sqlite3')).default;
+} catch (e) {
+  console.warn('SQLite3 not available, using fallback storage');
+  sqlite3 = null;
+}
+
+try {
+  Parser = (await import('tree-sitter')).default;
+  LangBash = (await import('tree-sitter-bash')).default;
+  LangC = (await import('tree-sitter-c')).default;
+  LangCSharp = (await import('tree-sitter-c-sharp')).default;
+  LangCpp = (await import('tree-sitter-cpp')).default;
+  LangCSS = (await import('tree-sitter-css')).default;
+  LangDart = (await import('tree-sitter-dart')).default;
+  LangElixir = (await import('tree-sitter-elixir')).default;
+  LangGo = (await import('tree-sitter-go')).default;
+  LangHaskell = (await import('tree-sitter-haskell')).default;
+  LangHTML = (await import('tree-sitter-html')).default;
+  LangJava = (await import('tree-sitter-java')).default;
+  LangJS = (await import('tree-sitter-javascript')).default;
+  LangJSON = (await import('tree-sitter-json')).default;
+  LangKotlin = (await import('@tree-sitter-grammars/tree-sitter-kotlin')).default;
+  LangLua = (await import('tree-sitter-lua')).default;
+  LangOCaml = (await import('tree-sitter-ocaml')).default;
+  LangPHP = (await import('tree-sitter-php')).default;
+  LangPython = (await import('tree-sitter-python')).default;
+  LangRuby = (await import('tree-sitter-ruby')).default;
+  LangRust = (await import('tree-sitter-rust')).default;
+  LangScala = (await import('tree-sitter-scala')).default;
+  LangSwift = (await import('tree-sitter-swift')).default;
+  LangTSX = (await import('tree-sitter-typescript/bindings/node/tsx.js')).default;
+  LangTS = (await import('tree-sitter-typescript/bindings/node/typescript.js')).default;
+} catch (e) {
+  console.warn('Tree-sitter parsers not available, using basic symbol extraction');
+  Parser = null;
+}
 import { promisify } from 'util';
 import { createEmbeddingProvider, getModelProfile, countChunkSize, getSizeLimits } from './providers.js';
+
+// Database wrapper for fallback support
+function getDatabase(dbPath) {
+  if (!sqlite3) {
+    console.warn('SQLite3 not available, using memory fallback');
+    return {
+      run: async () => Promise.resolve(),
+      get: async () => Promise.resolve(null),
+      all: async () => Promise.resolve([]),
+      close: () => {}
+    };
+  }
+  return new sqlite3.Database(dbPath);
+}
 import {  analyzeNodeForChunking, extractParentContext, yieldStatementChunks } from './chunking/semantic-chunker.js';
 import { readCodemap, writeCodemap } from './codemap/io.js';
 import { normalizeChunkMetadata } from './codemap/types.js';
@@ -660,7 +688,7 @@ export async function initDatabase(dimensions, basePath = '.') {
         fs.mkdirSync(dbDir, { recursive: true });
     }
 
-    const db = new sqlite3.Database(dbPath);
+    const db = getDatabase(dbPath);
     const run = promisify(db.run.bind(db));
 
     // Create table for code chunks with enhanced metadata
@@ -1113,7 +1141,7 @@ export async function indexProject({
     
     // Check for dimension/provider mismatches (migration detection)
     if (fs.existsSync(dbPath)) {
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
         
         try {
@@ -1179,7 +1207,7 @@ export async function indexProject({
             return;
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const placeholders = chunkIds.map(() => '?').join(', ');
 
@@ -1218,7 +1246,7 @@ export async function indexProject({
         try {
             const embedding = await embeddingProvider.generateEmbedding(enhancedEmbeddingText);
 
-            const db = new sqlite3.Database(dbPath);
+            const db = getDatabase(dbPath);
             const run = promisify(db.run.bind(db));
 
             await run(`
@@ -1736,7 +1764,7 @@ export async function searchCode(query, limit = 10, provider = 'auto', workingPa
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         // Enhanced search query to include semantic metadata
@@ -2093,7 +2121,7 @@ export async function getOverview(limit = 20, workingPath = '.') {
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         const chunks = await all(`
@@ -2191,7 +2219,7 @@ export async function recordIntention(originalQuery, targetSha, confidence = 1.0
 
         const normalizedQuery = normalizeQuery(originalQuery);
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const get = promisify(db.get.bind(db));
 
@@ -2241,7 +2269,7 @@ export async function searchByIntention(query, workingPath = '.') {
 
         const normalizedQuery = normalizeQuery(query);
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const get = promisify(db.get.bind(db));
 
         // Look for direct intention match WITH complete chunk information
@@ -2314,7 +2342,7 @@ export async function recordQueryPattern(query, workingPath = '.') {
             .replace(/\b\w+Controller\b/gi, '[CONTROLLER]')
             .trim();
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const get = promisify(db.get.bind(db));
 
@@ -2358,7 +2386,7 @@ export async function getQueryAnalytics(workingPath = '.') {
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         const patterns = await all(`

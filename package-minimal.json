@@ -54,10 +54,7 @@
     "fast-glob": "^3.3.2",
     "micromatch": "^4.0.8",
     "openai": "^4.103.0",
-    "tiktoken": "^1.0.22",
-    "wink-bm25-text-search": "^3.1.2",
-    "xxhash-wasm": "^1.1.0",
-    "zod": "^3.25.76"
+    "tiktoken": "^1.0.22"
   },
   "optionalDependencies": {
     "@tree-sitter-grammars/tree-sitter-kotlin": "^1.1.0",
