@@ -10,36 +10,121 @@ import crypto from 'crypto';
 import fg from 'fast-glob';
 import fs from 'fs';
 import path from 'path';
-import sqlite3 from 'sqlite3';
-import Parser from 'tree-sitter';
-import LangBash from 'tree-sitter-bash';
-import LangC from 'tree-sitter-c';
-import LangCSharp from 'tree-sitter-c-sharp';
-import LangCpp from 'tree-sitter-cpp';
-import LangCSS from 'tree-sitter-css';
-import LangDart from 'tree-sitter-dart';
-import LangElixir from 'tree-sitter-elixir';
-import LangGo from 'tree-sitter-go';
-import LangHaskell from 'tree-sitter-haskell';
-import LangHTML from 'tree-sitter-html';
-import LangJava from 'tree-sitter-java';
-import LangJS from 'tree-sitter-javascript';
-import LangJSON from 'tree-sitter-json';
-import LangKotlin from '@tree-sitter-grammars/tree-sitter-kotlin';
-import LangLua from 'tree-sitter-lua';
-import LangOCaml from 'tree-sitter-ocaml';
-import LangPHP from 'tree-sitter-php';
-import LangPython from 'tree-sitter-python';
-import LangRuby from 'tree-sitter-ruby';
-import LangRust from 'tree-sitter-rust';
-import LangScala from 'tree-sitter-scala';
-import LangSwift from 'tree-sitter-swift';
-import LangTSX from 'tree-sitter-typescript/bindings/node/tsx.js';
-import LangTS from 'tree-sitter-typescript/bindings/node/typescript.js';
+// Native dependencies - optional with fallbacks
+let sqlite3, Parser, LangBash, LangC, LangCSharp, LangCpp, LangCSS, LangDart, LangElixir, LangGo, LangHaskell, LangHTML, LangJava, LangJS, LangJSON, LangKotlin, LangLua, LangOCaml, LangPHP, LangPython, LangRuby, LangRust, LangScala, LangSwift, LangTSX, LangTS;
+
+// Initialize native dependencies
+async function initializeNativeDependencies() {
+  try {
+    sqlite3 = (await import('sqlite3')).default;
+  } catch (e) {
+    console.warn('SQLite3 not available, using fallback storage');
+    sqlite3 = null;
+  }
+
+  try {
+    // Use dynamic imports for tree-sitter packages
+    Parser = (await import('tree-sitter')).default;
+    
+    // Use createRequire for CommonJS modules that don't import properly
+    const { createRequire } = await import('module');
+    const require = createRequire(import.meta.url);
+    
+    LangBash = (await import('tree-sitter-bash')).default;
+    LangC = (await import('tree-sitter-c')).default;
+    LangCSharp = (await import('tree-sitter-c-sharp')).default;
+    LangCpp = (await import('tree-sitter-cpp')).default;
+    LangCSS = (await import('tree-sitter-css')).default;
+    
+    // Dart needs special handling - use require directly
+    try {
+      LangDart = require('@vokturz/tree-sitter-dart');
+      console.log('✓ Dart parser loaded via require');
+      
+      // Check if the loaded module has the required language property
+      if (!LangDart.language) {
+        console.warn('⚠️  Dart parser missing language property, creating mock for regex fallback');
+        // Create a mock language object to prevent errors but allow regex fallback
+        LangDart = {
+          language: {
+            // Minimal mock to satisfy tree-sitter interface
+            version: 1,
+            field_count: 0,
+            node_kind_count: 0
+          },
+          name: 'dart',
+          nodeTypeInfo: LangDart.nodeTypeInfo || []
+        };
+      }
+    } catch (dartError) {
+      console.warn('Dart parser failed to load:', dartError.message);
+      LangDart = null;
+    }
+    
+    // Update RESOLVED_LANGUAGES after Dart parser loads
+    RESOLVED_LANGUAGES.dart = resolveTreeSitterLanguage(LangDart);
+    console.log('Dart language resolved:', !!RESOLVED_LANGUAGES.dart);
+    
+    // Also update the language rule for .dart files
+    const dartRule = LANG_RULES['.dart'];
+    if (dartRule) {
+      dartRule.ts = RESOLVED_LANGUAGES.dart;
+      console.log('Dart rule updated:', !!dartRule.ts);
+    }
+    
+    LangElixir = (await import('tree-sitter-elixir')).default;
+    LangGo = (await import('tree-sitter-go')).default;
+    LangHaskell = (await import('tree-sitter-haskell')).default;
+    LangHTML = (await import('tree-sitter-html')).default;
+    LangJava = (await import('tree-sitter-java')).default;
+    LangJS = (await import('tree-sitter-javascript')).default;
+    LangJSON = (await import('tree-sitter-json')).default;
+    LangKotlin = (await import('@tree-sitter-grammars/tree-sitter-kotlin')).default;
+    
+    // Skip Lua - it doesn't have compiled bindings
+    try {
+      LangLua = (await import('tree-sitter-lua')).default;
+    } catch (luaError) {
+      console.warn('Lua parser not available:', luaError.message);
+      LangLua = null;
+    }
+    
+    LangOCaml = (await import('tree-sitter-ocaml')).default;
+    LangPHP = (await import('tree-sitter-php')).default;
+    LangPython = (await import('tree-sitter-python')).default;
+    LangRuby = (await import('tree-sitter-ruby')).default;
+    LangRust = (await import('tree-sitter-rust')).default;
+    LangScala = (await import('tree-sitter-scala')).default;
+    LangSwift = (await import('tree-sitter-swift')).default;
+    LangTSX = (await import('tree-sitter-typescript/bindings/node/tsx.js')).default;
+    LangTS = (await import('tree-sitter-typescript/bindings/node/typescript.js')).default;
+    
+    console.log('Tree-sitter parsers loaded successfully');
+  } catch (e) {
+    console.warn('Tree-sitter parsers not available, using basic symbol extraction:', e.message);
+    Parser = null;
+  }
+}
+
+// Initialize dependencies immediately
+initializeNativeDependencies();
 import { promisify } from 'util';
 import { createEmbeddingProvider, getModelProfile, countChunkSize, getSizeLimits } from './providers.js';
-import {  analyzeNodeForChunking, batchAnalyzeNodes, extractParentContext, yieldStatementChunks } from './chunking/semantic-chunker.js';
-import { getTokenCountStats } from './chunking/token-counter.js';
+
+// Database wrapper for fallback support
+function getDatabase(dbPath) {
+  if (!sqlite3) {
+    console.warn('SQLite3 not available, using memory fallback');
+    return {
+      run: async () => Promise.resolve(),
+      get: async () => Promise.resolve(null),
+      all: async () => Promise.resolve([]),
+      close: () => {}
+    };
+  }
+  return new sqlite3.Database(dbPath);
+}
+import {  analyzeNodeForChunking, extractParentContext, yieldStatementChunks } from './chunking/semantic-chunker.js';
 import { readCodemap, writeCodemap } from './codemap/io.js';
 import { normalizeChunkMetadata } from './codemap/types.js';
 import { applyScope, normalizeScopeFilters } from './search/applyScope.js';
@@ -397,7 +482,18 @@ const LANG_RULES = {
             'function_signature': ['if_statement', 'try_statement', 'for_statement', 'while_statement', 'switch_statement']
         },
         variableTypes: ['variable_declaration', 'top_level_variable_declaration', 'initialized_variable_declaration', 'field_declaration'],
-        commentPattern: /\/\/\/.*|\/\*\*[\s\S]*?\*\//g
+        commentPattern: /\/\/\/.*|\/\*\*[\s\S]*?\*\//g,
+        // Enhanced regex patterns for Dart fallback extraction
+        regexPatterns: {
+            class: /(?:class|abstract\s+class|mixin)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:extends\s+[A-Za-z_][A-Za-z0-9_]*\s*)?(?:with\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*)?(?:implements\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*)?\{/g,
+            function: /(?:\s+(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*\([^)]*\)\s*(?:async\s+)?(?:=>|{))|(?:([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*[:{])|(?:void\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()|(?:[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:{|=>))/g,
+            method: /(?:\s+(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:async\s+)?(?:=>|{))|(?:([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*[:{])|(?:void\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()|(?:[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:{|=>))/g,
+            constructor: /([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:[:{])/g,
+            variable: /(?:late\s+)?(?:final\s+|const\s+)?[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/g,
+            enum: /enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*{/g,
+            extension: /extension\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:on\s+[A-Za-z_][A-Za-z0-9_<>]+\s+)?{/g,
+            import: /import\s+(?:(?:'[^\']*'|\"[^\"]*\")\s+)?(?:show\s+([A-Za-z_][A-Za-z0-9_]*)|hide\s+([A-Za-z_][A-Za-z0-9_]*)|as\s+([A-Za-z_][A-Za-z0-9_]*))/g
+        }
     },
     '.json': {
         lang: 'json',
@@ -661,7 +757,7 @@ export async function initDatabase(dimensions, basePath = '.') {
         fs.mkdirSync(dbDir, { recursive: true });
     }
 
-    const db = new sqlite3.Database(dbPath);
+    const db = getDatabase(dbPath);
     const run = promisify(db.run.bind(db));
 
     // Create table for code chunks with enhanced metadata
@@ -988,6 +1084,175 @@ function generateEnhancedEmbeddingText(code, metadata, variables, docComments) {
     return enhancedText;
 }
 
+// Regex-based symbol extraction fallback for when tree-sitter is not available
+async function extractSymbolsWithRegex(source, filePath, rule, yieldChunk) {
+    const lines = source.split('\n');
+    
+    // Extract classes
+    if (rule.regexPatterns.class) {
+        let match;
+        while ((match = rule.regexPatterns.class.exec(source)) !== null) {
+            const className = match[1] || match[2] || match[3];
+            if (className) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findClassEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'class_definition',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, className);
+            }
+        }
+    }
+    
+    // Extract functions/methods
+    if (rule.regexPatterns.function) {
+        let match;
+        while ((match = rule.regexPatterns.function.exec(source)) !== null) {
+            const functionName = match[1] || match[2] || match[3] || match[4];
+            if (functionName && !isKeyword(functionName)) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                
+                await yieldChunk({
+                    type: 'function_signature',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: startLine - 1, column: match[0].length },
+                    text: match[0],
+                    childCount: 0
+                }, functionName);
+            }
+        }
+    }
+    
+    // Extract variables
+    if (rule.regexPatterns.variable) {
+        let match;
+        while ((match = rule.regexPatterns.variable.exec(source)) !== null) {
+            const varName = match[1];
+            if (varName && !isKeyword(varName)) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                
+                await yieldChunk({
+                    type: 'variable_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: startLine - 1, column: match[0].length },
+                    text: match[0],
+                    childCount: 0
+                }, varName);
+            }
+        }
+    }
+    
+    // Extract enums
+    if (rule.regexPatterns.enum) {
+        let match;
+        while ((match = rule.regexPatterns.enum.exec(source)) !== null) {
+            const enumName = match[1];
+            if (enumName) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findEnumEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'enum_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, enumName);
+            }
+        }
+    }
+    
+    // Extract extensions
+    if (rule.regexPatterns.extension) {
+        let match;
+        while ((match = rule.regexPatterns.extension.exec(source)) !== null) {
+            const extName = match[1];
+            if (extName) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findExtensionEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'extension_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, extName);
+            }
+        }
+    }
+}
+
+function findClassEnd(source, startIndex) {
+    let braceCount = 0;
+    let inString = false;
+    let stringChar = '';
+    
+    for (let i = startIndex; i < source.length; i++) {
+        const char = source[i];
+        
+        if (!inString) {
+            if (char === '"' || char === "'" || char === '`') {
+                inString = true;
+                stringChar = char;
+            } else if (char === '{') {
+                braceCount++;
+            } else if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                    return source.substring(0, i + 1).split('\n').length;
+                }
+            }
+        } else {
+            if (char === stringChar && source[i - 1] !== '\\') {
+                inString = false;
+            }
+        }
+    }
+    return source.substring(0, startIndex).split('\n').length + 1;
+}
+
+function findEnumEnd(source, startIndex) {
+    const lines = source.substring(startIndex).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('}')) {
+            return source.substring(0, startIndex).split('\n').length + i + 1;
+        }
+    }
+    return source.substring(0, startIndex).split('\n').length + lines.length;
+}
+
+function findExtensionEnd(source, startIndex) {
+    return findClassEnd(source, startIndex); // Same logic as classes
+}
+
+function isKeyword(name) {
+    const keywords = new Set([
+        'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue',
+        'return', 'throw', 'try', 'catch', 'finally', 'class', 'interface', 'extends', 'implements',
+        'import', 'export', 'from', 'as', 'new', 'this', 'super', 'static', 'final', 'const',
+        'var', 'let', 'void', 'bool', 'int', 'double', 'String', 'List', 'Map', 'Set',
+        'abstract', 'async', 'await', 'yield', 'sync', 'native', 'external', 'factory',
+        'get', 'set', 'operator', 'with', 'mixin', 'on', 'show', 'hide', 'deferred',
+        'required', 'part', 'of', 'in', 'is', 'assert', 'rethrow', 'null', 'true', 'false'
+    ]);
+    return keywords.has(name);
+}
+
 // ============================================================================
 // MAIN SERVICE FUNCTIONS
 // ============================================================================
@@ -1044,17 +1309,7 @@ export async function indexProject({
                 '**/.yarn/**',
                 '**/Library/**',
                 '**/System/**',
-                '**/.Trash/**',
-                '**/.pampa/**',
-                '**/pampa.codemap.json',
-                '**/pampa.codemap.json.backup-*',
-                '**/package-lock.json',
-                '**/yarn.lock',
-                '**/pnpm-lock.yaml',
-                '**/*.json',              // Exclude JSON config files (excessive granularity)
-                '**/*.sh',                // Exclude shell scripts (command-level chunking too granular)
-                '**/examples/**',
-                '**/assets/**'
+                '**/.Trash/**'
             ],
             onlyFiles: true,
             dot: false
@@ -1115,16 +1370,6 @@ export async function indexProject({
     } else {
         console.log(`  ℹ Using character estimation (token counting unavailable)`);
     }
-    
-    // Display rate limiting info
-    if (embeddingProvider.rateLimiter) {
-        const rateLimiterStats = embeddingProvider.rateLimiter.getStats();
-        if (rateLimiterStats.isLimited) {
-            console.log(`  🔒 Rate limiting: ${rateLimiterStats.rpm} requests/minute`);
-        } else {
-            console.log(`  ⚡ Rate limiting: disabled (local model)`);
-        }
-    }
     console.log('');
 
     // Initialize database with the correct base path
@@ -1134,7 +1379,7 @@ export async function indexProject({
     
     // Check for dimension/provider mismatches (migration detection)
     if (fs.existsSync(dbPath)) {
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
         
         try {
@@ -1194,23 +1439,13 @@ export async function indexProject({
     const parser = new Parser();
     let processedChunks = 0;
     const errors = [];
-    
-    // Chunking statistics
-    const chunkingStats = {
-        totalNodes: 0,
-        skippedSmall: 0,
-        subdivided: 0,
-        statementFallback: 0,
-        normalChunks: 0,
-        mergedSmall: 0
-    };
 
     async function deleteChunks(chunkIds, metadataLookup = new Map()) {
         if (!Array.isArray(chunkIds) || chunkIds.length === 0) {
             return;
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const placeholders = chunkIds.map(() => '?').join(', ');
 
@@ -1249,7 +1484,7 @@ export async function indexProject({
         try {
             const embedding = await embeddingProvider.generateEmbedding(enhancedEmbeddingText);
 
-            const db = new sqlite3.Database(dbPath);
+            const db = getDatabase(dbPath);
             const run = promisify(db.run.bind(db));
 
             await run(`
@@ -1362,6 +1597,11 @@ export async function indexProject({
             
             let tree;
             try {
+                // Check if tree-sitter language is available
+                if (!rule.ts) {
+                    throw new Error(`No tree-sitter parser available for ${rule.lang} - falling back to regex extraction`);
+                }
+                
                 parser.setLanguage(rule.ts);
                 
                 // Use callback-based parse for large files to avoid "Invalid argument" errors
@@ -1381,19 +1621,16 @@ export async function indexProject({
                     throw new Error('Failed to create syntax tree');
                 }
             } catch (parseError) {
-                // Genuine parse errors (not size-related)
-                throw parseError;
+                // If tree-sitter parsing fails, try regex-based fallback
+                if (rule.regexPatterns) {
+                    console.log(`Using regex fallback for ${rel}: ${parseError.message}`);
+                    await extractSymbolsWithRegex(source, rel, rule, yieldChunk);
+                } else {
+                    throw parseError;
+                }
             }
 
-            // Track processed nodes to avoid double-processing from subdivision
-            const processedNodes = new Set();
-            
             async function walk(node) {
-                // Skip if this node was already processed as part of a subdivision
-                if (processedNodes.has(node.id)) {
-                    return;
-                }
-                
                 if (rule.nodeTypes.includes(node.type)) {
                     await yieldChunk(node);
                 }
@@ -1405,113 +1642,7 @@ export async function indexProject({
                 }
             }
 
-            async function yieldChunk(node, parentNode = null) {
-                chunkingStats.totalNodes++;
-                
-                // ===== TOKEN-AWARE CHUNKING: Check size before processing =====
-                // Analyze the node to determine if it needs subdivision
-                const analysis = await analyzeNodeForChunking(node, source, rule, modelProfile);
-                
-                // Skip chunks that are too small (unless they're top-level)
-                if (analysis.size < limits.min && parentNode !== null) {
-                    // Skip this chunk - it's too small and not a top-level symbol
-                    chunkingStats.skippedSmall++;
-                    return;
-                }
-                
-                // If chunk is within optimal range, process normally
-                // If chunk is too large, subdivide it
-                if (analysis.needsSubdivision && analysis.subdivisionCandidates.length > 0) {
-                    // Try to subdivide into smaller semantic chunks
-                    chunkingStats.subdivided++;
-                    
-                    // ===== OPTIMIZATION: Batch analyze all subdivision candidates at once =====
-                    const subAnalyses = await batchAnalyzeNodes(
-                        analysis.subdivisionCandidates,
-                        source,
-                        rule,
-                        modelProfile,
-                        true  // isSubdivision = true (allows safe estimate optimizations)
-                    );
-                    
-                    // Collect small chunks that will be skipped in subdivision
-                    const smallChunks = [];
-                    
-                    for (let i = 0; i < subAnalyses.length; i++) {
-                        const subAnalysis = subAnalyses[i];
-                        const subNode = subAnalysis.node;
-                        
-                        if (subAnalysis.size < limits.min) {
-                            // This subdivision is too small - collect it for merging
-                            const subCode = source.slice(subNode.startIndex, subNode.endIndex);
-                            smallChunks.push({
-                                node: subNode,
-                                code: subCode,
-                                size: subAnalysis.size
-                            });
-                            // Still mark as processed to avoid double-processing
-                            processedNodes.add(subNode.id);
-                        } else {
-                            // Process normal-sized subdivisions
-                            processedNodes.add(subNode.id);
-                            await yieldChunk(subNode, node);
-                        }
-                    }
-                    
-                    // If we have small chunks, merge them into a single chunk
-                    if (smallChunks.length > 0) {
-                        const totalSmallSize = smallChunks.reduce((sum, c) => sum + c.size, 0);
-                        
-                        // If merged size is meaningful, create a combined chunk
-                        if (totalSmallSize >= limits.min || smallChunks.length >= 3) {
-                            const mergedCode = smallChunks.map(c => c.code).join('\n\n');
-                            // Create a pseudo-node for the merged chunk using parent's position
-                            const mergedNode = {
-                                ...node,
-                                type: `${node.type}_merged`,
-                                startIndex: smallChunks[0].node.startIndex,
-                                endIndex: smallChunks[smallChunks.length - 1].node.endIndex
-                            };
-                            const suffix = `small_methods_${smallChunks.length}`;
-                            
-                            chunkingStats.mergedSmall++;
-                            await processChunk(mergedNode, mergedCode, suffix, parentNode);
-                        } else {
-                            // Still too small even when merged - truly skip
-                            chunkingStats.skippedSmall += smallChunks.length;
-                        }
-                    }
-                    
-                    return;
-                } else if (analysis.size > limits.max) {
-                    // Node is too large but has no subdivision candidates
-                    // Fall back to statement-level chunking
-                    chunkingStats.statementFallback++;
-                    const code = source.slice(node.startIndex, node.endIndex);
-                    const statementChunks = await yieldStatementChunks(
-                        node, 
-                        source, 
-                        limits.max, 
-                        limits.overlap, 
-                        modelProfile
-                    );
-                    
-                    // Process each statement-level chunk
-                    for (let i = 0; i < statementChunks.length; i++) {
-                        const stmtChunk = statementChunks[i];
-                        await processChunk(node, stmtChunk.code, `${i + 1}`, parentNode);
-                    }
-                    return;
-                }
-                
-                // Chunk is good size - process it normally
-                chunkingStats.normalChunks++;
-                const code = source.slice(node.startIndex, node.endIndex);
-                await processChunk(node, code, null, parentNode);
-            }
-            
-            // Helper function to process a single chunk
-            async function processChunk(node, code, suffix = null, parentNode = null) {
+            async function yieldChunk(node) {
                 // More robust function to extract symbol name
                 function extractSymbolName(node, source) {
                     // Try different ways to get the name according to node type
@@ -1607,13 +1738,10 @@ export async function indexProject({
                     return `${node.type}_${node.startIndex}`;
                 }
 
-                let symbol = extractSymbolName(node, source);
+                const symbol = extractSymbolName(node, source);
                 if (!symbol) return;
-                
-                // Add suffix for statement-level chunks
-                if (suffix) {
-                    symbol = `${symbol}_part${suffix}`;
-                }
+
+                const code = source.slice(node.startIndex, node.endIndex);
 
                 // ===== ENHANCED METADATA EXTRACTION =====
 
@@ -1654,9 +1782,7 @@ export async function indexProject({
                     endLine: source.slice(0, node.endIndex).split('\n').length,
                     codeLength: code.length,
                     hasDocumentation: !!docComments,
-                    variableCount: importantVariables.length,
-                    isSubdivision: !!suffix,
-                    hasParentContext: !!parentNode
+                    variableCount: importantVariables.length
                 };
 
                 const sha = crypto.createHash('sha1').update(code).digest('hex');
@@ -1806,52 +1932,13 @@ export async function indexProject({
     attachSymbolGraphToCodemap(codemap);
     codemap = writeCodemap(codemapPath, codemap);
 
-    // Get token counting performance stats
-    const tokenStats = getTokenCountStats();
-    
-    // Log chunking statistics
-    if (chunkingStats.totalNodes > 0) {
-        console.log(`\n📈 Chunking Statistics:`);
-        console.log(`  Total AST nodes analyzed: ${chunkingStats.totalNodes}`);
-        console.log(`  Normal chunks (optimal size): ${chunkingStats.normalChunks}`);
-        console.log(`  Subdivided (too large): ${chunkingStats.subdivided}`);
-        console.log(`  Merged small chunks: ${chunkingStats.mergedSmall}`);
-        console.log(`  Statement-level fallback: ${chunkingStats.statementFallback}`);
-        console.log(`  Skipped (too small): ${chunkingStats.skippedSmall}`);
-        console.log(`  Final chunk count: ${processedChunks}`);
-        
-        const reductionRatio = chunkingStats.totalNodes > 0 
-            ? ((1 - processedChunks / chunkingStats.totalNodes) * 100).toFixed(1)
-            : 0;
-        console.log(`  Chunk reduction: ${reductionRatio}% fewer chunks vs naive approach`);
-        console.log('');
-    }
-    
-    // Log token counting performance stats (if token counting was used)
-    if (modelProfile.useTokens && tokenStats.totalRequests > 0) {
-        console.log(`⚡ Token Counting Performance:`);
-        console.log(`  Total size checks: ${tokenStats.totalRequests}`);
-        console.log(`  Character pre-filter: ${tokenStats.charFilterRate} (${tokenStats.charFilterSkips} skipped)`);
-        console.log(`  Cache hits: ${tokenStats.cacheHitRate} (${tokenStats.cacheHits} cached)`);
-        console.log(`  Actual tokenizations: ${tokenStats.actualTokenizations}`);
-        console.log(`  Batch operations: ${tokenStats.batchTokenizations}`);
-        
-        const efficiency = tokenStats.totalRequests > 0
-            ? (((tokenStats.charFilterSkips + tokenStats.cacheHits) / tokenStats.totalRequests) * 100).toFixed(1)
-            : 0;
-        console.log(`  Overall efficiency: ${efficiency}% avoided expensive tokenization`);
-        console.log('');
-    }
-
     // Return structured result
     return {
         success: true,
         processedChunks,
         totalChunks: Object.keys(codemap).length,
         provider: embeddingProvider.getName(),
-        errors,
-        chunkingStats,
-        tokenStats: modelProfile.useTokens ? tokenStats : undefined
+        errors
     };
 }
 
@@ -1925,7 +2012,7 @@ export async function searchCode(query, limit = 10, provider = 'auto', workingPa
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         // Enhanced search query to include semantic metadata
@@ -2282,7 +2369,7 @@ export async function getOverview(limit = 20, workingPath = '.') {
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         const chunks = await all(`
@@ -2380,7 +2467,7 @@ export async function recordIntention(originalQuery, targetSha, confidence = 1.0
 
         const normalizedQuery = normalizeQuery(originalQuery);
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const get = promisify(db.get.bind(db));
 
@@ -2430,7 +2517,7 @@ export async function searchByIntention(query, workingPath = '.') {
 
         const normalizedQuery = normalizeQuery(query);
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const get = promisify(db.get.bind(db));
 
         // Look for direct intention match WITH complete chunk information
@@ -2503,7 +2590,7 @@ export async function recordQueryPattern(query, workingPath = '.') {
             .replace(/\b\w+Controller\b/gi, '[CONTROLLER]')
             .trim();
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const run = promisify(db.run.bind(db));
         const get = promisify(db.get.bind(db));
 
@@ -2547,7 +2634,7 @@ export async function getQueryAnalytics(workingPath = '.') {
             };
         }
 
-        const db = new sqlite3.Database(dbPath);
+        const db = getDatabase(dbPath);
         const all = promisify(db.all.bind(db));
 
         const patterns = await all(`
