@@ -107,3 +107,4 @@ test/test-implementations/*
 
 .npmignore
 PUBLISHING.md
+*.Identifier
