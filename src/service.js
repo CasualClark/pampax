@@ -38,11 +38,38 @@ async function initializeNativeDependencies() {
     
     // Dart needs special handling - use require directly
     try {
-      LangDart = require('tree-sitter-dart');
+      LangDart = require('@vokturz/tree-sitter-dart');
       console.log('✓ Dart parser loaded via require');
+      
+      // Check if the loaded module has the required language property
+      if (!LangDart.language) {
+        console.warn('⚠️  Dart parser missing language property, creating mock for regex fallback');
+        // Create a mock language object to prevent errors but allow regex fallback
+        LangDart = {
+          language: {
+            // Minimal mock to satisfy tree-sitter interface
+            version: 1,
+            field_count: 0,
+            node_kind_count: 0
+          },
+          name: 'dart',
+          nodeTypeInfo: LangDart.nodeTypeInfo || []
+        };
+      }
     } catch (dartError) {
       console.warn('Dart parser failed to load:', dartError.message);
       LangDart = null;
+    }
+    
+    // Update RESOLVED_LANGUAGES after Dart parser loads
+    RESOLVED_LANGUAGES.dart = resolveTreeSitterLanguage(LangDart);
+    console.log('Dart language resolved:', !!RESOLVED_LANGUAGES.dart);
+    
+    // Also update the language rule for .dart files
+    const dartRule = LANG_RULES['.dart'];
+    if (dartRule) {
+      dartRule.ts = RESOLVED_LANGUAGES.dart;
+      console.log('Dart rule updated:', !!dartRule.ts);
     }
     
     LangElixir = (await import('tree-sitter-elixir')).default;
