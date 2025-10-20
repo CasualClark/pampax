@@ -13,43 +13,74 @@ import path from 'path';
 // Native dependencies - optional with fallbacks
 let sqlite3, Parser, LangBash, LangC, LangCSharp, LangCpp, LangCSS, LangDart, LangElixir, LangGo, LangHaskell, LangHTML, LangJava, LangJS, LangJSON, LangKotlin, LangLua, LangOCaml, LangPHP, LangPython, LangRuby, LangRust, LangScala, LangSwift, LangTSX, LangTS;
 
-try {
-  sqlite3 = (await import('sqlite3')).default;
-} catch (e) {
-  console.warn('SQLite3 not available, using fallback storage');
-  sqlite3 = null;
+// Initialize native dependencies
+async function initializeNativeDependencies() {
+  try {
+    sqlite3 = (await import('sqlite3')).default;
+  } catch (e) {
+    console.warn('SQLite3 not available, using fallback storage');
+    sqlite3 = null;
+  }
+
+  try {
+    // Use dynamic imports for tree-sitter packages
+    Parser = (await import('tree-sitter')).default;
+    
+    // Use createRequire for CommonJS modules that don't import properly
+    const { createRequire } = await import('module');
+    const require = createRequire(import.meta.url);
+    
+    LangBash = (await import('tree-sitter-bash')).default;
+    LangC = (await import('tree-sitter-c')).default;
+    LangCSharp = (await import('tree-sitter-c-sharp')).default;
+    LangCpp = (await import('tree-sitter-cpp')).default;
+    LangCSS = (await import('tree-sitter-css')).default;
+    
+    // Dart needs special handling - use require directly
+    try {
+      LangDart = require('tree-sitter-dart');
+      console.log('✓ Dart parser loaded via require');
+    } catch (dartError) {
+      console.warn('Dart parser failed to load:', dartError.message);
+      LangDart = null;
+    }
+    
+    LangElixir = (await import('tree-sitter-elixir')).default;
+    LangGo = (await import('tree-sitter-go')).default;
+    LangHaskell = (await import('tree-sitter-haskell')).default;
+    LangHTML = (await import('tree-sitter-html')).default;
+    LangJava = (await import('tree-sitter-java')).default;
+    LangJS = (await import('tree-sitter-javascript')).default;
+    LangJSON = (await import('tree-sitter-json')).default;
+    LangKotlin = (await import('@tree-sitter-grammars/tree-sitter-kotlin')).default;
+    
+    // Skip Lua - it doesn't have compiled bindings
+    try {
+      LangLua = (await import('tree-sitter-lua')).default;
+    } catch (luaError) {
+      console.warn('Lua parser not available:', luaError.message);
+      LangLua = null;
+    }
+    
+    LangOCaml = (await import('tree-sitter-ocaml')).default;
+    LangPHP = (await import('tree-sitter-php')).default;
+    LangPython = (await import('tree-sitter-python')).default;
+    LangRuby = (await import('tree-sitter-ruby')).default;
+    LangRust = (await import('tree-sitter-rust')).default;
+    LangScala = (await import('tree-sitter-scala')).default;
+    LangSwift = (await import('tree-sitter-swift')).default;
+    LangTSX = (await import('tree-sitter-typescript/bindings/node/tsx.js')).default;
+    LangTS = (await import('tree-sitter-typescript/bindings/node/typescript.js')).default;
+    
+    console.log('Tree-sitter parsers loaded successfully');
+  } catch (e) {
+    console.warn('Tree-sitter parsers not available, using basic symbol extraction:', e.message);
+    Parser = null;
+  }
 }
 
-try {
-  Parser = (await import('tree-sitter')).default;
-  LangBash = (await import('tree-sitter-bash')).default;
-  LangC = (await import('tree-sitter-c')).default;
-  LangCSharp = (await import('tree-sitter-c-sharp')).default;
-  LangCpp = (await import('tree-sitter-cpp')).default;
-  LangCSS = (await import('tree-sitter-css')).default;
-  LangDart = (await import('tree-sitter-dart')).default;
-  LangElixir = (await import('tree-sitter-elixir')).default;
-  LangGo = (await import('tree-sitter-go')).default;
-  LangHaskell = (await import('tree-sitter-haskell')).default;
-  LangHTML = (await import('tree-sitter-html')).default;
-  LangJava = (await import('tree-sitter-java')).default;
-  LangJS = (await import('tree-sitter-javascript')).default;
-  LangJSON = (await import('tree-sitter-json')).default;
-  LangKotlin = (await import('@tree-sitter-grammars/tree-sitter-kotlin')).default;
-  LangLua = (await import('tree-sitter-lua')).default;
-  LangOCaml = (await import('tree-sitter-ocaml')).default;
-  LangPHP = (await import('tree-sitter-php')).default;
-  LangPython = (await import('tree-sitter-python')).default;
-  LangRuby = (await import('tree-sitter-ruby')).default;
-  LangRust = (await import('tree-sitter-rust')).default;
-  LangScala = (await import('tree-sitter-scala')).default;
-  LangSwift = (await import('tree-sitter-swift')).default;
-  LangTSX = (await import('tree-sitter-typescript/bindings/node/tsx.js')).default;
-  LangTS = (await import('tree-sitter-typescript/bindings/node/typescript.js')).default;
-} catch (e) {
-  console.warn('Tree-sitter parsers not available, using basic symbol extraction');
-  Parser = null;
-}
+// Initialize dependencies immediately
+initializeNativeDependencies();
 import { promisify } from 'util';
 import { createEmbeddingProvider, getModelProfile, countChunkSize, getSizeLimits } from './providers.js';
 
@@ -424,7 +455,18 @@ const LANG_RULES = {
             'function_signature': ['if_statement', 'try_statement', 'for_statement', 'while_statement', 'switch_statement']
         },
         variableTypes: ['variable_declaration', 'top_level_variable_declaration', 'initialized_variable_declaration', 'field_declaration'],
-        commentPattern: /\/\/\/.*|\/\*\*[\s\S]*?\*\//g
+        commentPattern: /\/\/\/.*|\/\*\*[\s\S]*?\*\//g,
+        // Enhanced regex patterns for Dart fallback extraction
+        regexPatterns: {
+            class: /(?:class|abstract\s+class|mixin)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:extends\s+[A-Za-z_][A-Za-z0-9_]*\s*)?(?:with\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*)?(?:implements\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s*)?\{/g,
+            function: /(?:\s+(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*\([^)]*\)\s*(?:async\s+)?(?:=>|{))|(?:([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*[:{])|(?:void\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()|(?:[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:{|=>))/g,
+            method: /(?:\s+(?:async\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:async\s+)?(?:=>|{))|(?:([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*[:{])|(?:void\s+([A-Za-z_][A-Za-z0-9_]*)\s*\()|(?:[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:{|=>))/g,
+            constructor: /([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:[:{])/g,
+            variable: /(?:late\s+)?(?:final\s+|const\s+)?[A-Za-z_][A-Za-z0-9_<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/g,
+            enum: /enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*{/g,
+            extension: /extension\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:on\s+[A-Za-z_][A-Za-z0-9_<>]+\s+)?{/g,
+            import: /import\s+(?:(?:'[^\']*'|\"[^\"]*\")\s+)?(?:show\s+([A-Za-z_][A-Za-z0-9_]*)|hide\s+([A-Za-z_][A-Za-z0-9_]*)|as\s+([A-Za-z_][A-Za-z0-9_]*))/g
+        }
     },
     '.json': {
         lang: 'json',
@@ -1015,6 +1057,175 @@ function generateEnhancedEmbeddingText(code, metadata, variables, docComments) {
     return enhancedText;
 }
 
+// Regex-based symbol extraction fallback for when tree-sitter is not available
+async function extractSymbolsWithRegex(source, filePath, rule, yieldChunk) {
+    const lines = source.split('\n');
+    
+    // Extract classes
+    if (rule.regexPatterns.class) {
+        let match;
+        while ((match = rule.regexPatterns.class.exec(source)) !== null) {
+            const className = match[1] || match[2] || match[3];
+            if (className) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findClassEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'class_definition',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, className);
+            }
+        }
+    }
+    
+    // Extract functions/methods
+    if (rule.regexPatterns.function) {
+        let match;
+        while ((match = rule.regexPatterns.function.exec(source)) !== null) {
+            const functionName = match[1] || match[2] || match[3] || match[4];
+            if (functionName && !isKeyword(functionName)) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                
+                await yieldChunk({
+                    type: 'function_signature',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: startLine - 1, column: match[0].length },
+                    text: match[0],
+                    childCount: 0
+                }, functionName);
+            }
+        }
+    }
+    
+    // Extract variables
+    if (rule.regexPatterns.variable) {
+        let match;
+        while ((match = rule.regexPatterns.variable.exec(source)) !== null) {
+            const varName = match[1];
+            if (varName && !isKeyword(varName)) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                
+                await yieldChunk({
+                    type: 'variable_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: startLine - 1, column: match[0].length },
+                    text: match[0],
+                    childCount: 0
+                }, varName);
+            }
+        }
+    }
+    
+    // Extract enums
+    if (rule.regexPatterns.enum) {
+        let match;
+        while ((match = rule.regexPatterns.enum.exec(source)) !== null) {
+            const enumName = match[1];
+            if (enumName) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findEnumEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'enum_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, enumName);
+            }
+        }
+    }
+    
+    // Extract extensions
+    if (rule.regexPatterns.extension) {
+        let match;
+        while ((match = rule.regexPatterns.extension.exec(source)) !== null) {
+            const extName = match[1];
+            if (extName) {
+                const startLine = source.substring(0, match.index).split('\n').length;
+                const endLine = findExtensionEnd(source, match.index);
+                
+                await yieldChunk({
+                    type: 'extension_declaration',
+                    startIndex: match.index,
+                    endIndex: match.index + match[0].length,
+                    startPosition: { row: startLine - 1, column: 0 },
+                    endPosition: { row: endLine - 1, column: lines[endLine - 1].length },
+                    text: match[0],
+                    childCount: 0
+                }, extName);
+            }
+        }
+    }
+}
+
+function findClassEnd(source, startIndex) {
+    let braceCount = 0;
+    let inString = false;
+    let stringChar = '';
+    
+    for (let i = startIndex; i < source.length; i++) {
+        const char = source[i];
+        
+        if (!inString) {
+            if (char === '"' || char === "'" || char === '`') {
+                inString = true;
+                stringChar = char;
+            } else if (char === '{') {
+                braceCount++;
+            } else if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                    return source.substring(0, i + 1).split('\n').length;
+                }
+            }
+        } else {
+            if (char === stringChar && source[i - 1] !== '\\') {
+                inString = false;
+            }
+        }
+    }
+    return source.substring(0, startIndex).split('\n').length + 1;
+}
+
+function findEnumEnd(source, startIndex) {
+    const lines = source.substring(startIndex).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('}')) {
+            return source.substring(0, startIndex).split('\n').length + i + 1;
+        }
+    }
+    return source.substring(0, startIndex).split('\n').length + lines.length;
+}
+
+function findExtensionEnd(source, startIndex) {
+    return findClassEnd(source, startIndex); // Same logic as classes
+}
+
+function isKeyword(name) {
+    const keywords = new Set([
+        'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue',
+        'return', 'throw', 'try', 'catch', 'finally', 'class', 'interface', 'extends', 'implements',
+        'import', 'export', 'from', 'as', 'new', 'this', 'super', 'static', 'final', 'const',
+        'var', 'let', 'void', 'bool', 'int', 'double', 'String', 'List', 'Map', 'Set',
+        'abstract', 'async', 'await', 'yield', 'sync', 'native', 'external', 'factory',
+        'get', 'set', 'operator', 'with', 'mixin', 'on', 'show', 'hide', 'deferred',
+        'required', 'part', 'of', 'in', 'is', 'assert', 'rethrow', 'null', 'true', 'false'
+    ]);
+    return keywords.has(name);
+}
+
 // ============================================================================
 // MAIN SERVICE FUNCTIONS
 // ============================================================================
@@ -1359,6 +1570,11 @@ export async function indexProject({
             
             let tree;
             try {
+                // Check if tree-sitter language is available
+                if (!rule.ts) {
+                    throw new Error(`No tree-sitter parser available for ${rule.lang} - falling back to regex extraction`);
+                }
+                
                 parser.setLanguage(rule.ts);
                 
                 // Use callback-based parse for large files to avoid "Invalid argument" errors
@@ -1378,8 +1594,13 @@ export async function indexProject({
                     throw new Error('Failed to create syntax tree');
                 }
             } catch (parseError) {
-                // Genuine parse errors (not size-related)
-                throw parseError;
+                // If tree-sitter parsing fails, try regex-based fallback
+                if (rule.regexPatterns) {
+                    console.log(`Using regex fallback for ${rel}: ${parseError.message}`);
+                    await extractSymbolsWithRegex(source, rel, rule, yieldChunk);
+                } else {
+                    throw parseError;
+                }
             }
 
             async function walk(node) {
