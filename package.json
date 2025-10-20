@@ -1,6 +1,6 @@
 {
   "name": "@casualclark/pampax",
-  "version": "1.15.1-oak.1",
+  "version": "1.15.1-oak.2",
   "description": "Casual Oak's PAMPAX Fork – Enhanced with Dart/Flutter support and improved MCP integration",
   "author": "Casual Oak",
   "type": "module",
