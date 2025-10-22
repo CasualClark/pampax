@@ -1,0 +1,26 @@
+[
+  {
+    "id": "simple-python-main.py-function-greet",
+    "repo": "test-repo",
+    "path": "main.py",
+    "byteStart": 0,
+    "byteEnd": 50,
+    "kind": "function",
+    "name": "greet",
+    "signature": "def greet(name: str) -> str:",
+    "doc": "A simple greeting function",
+    "parents": [],
+    "references": []
+  },
+  {
+    "id": "simple-python-main.py-module-main",
+    "repo": "test-repo",
+    "path": "main.py",
+    "byteStart": 0,
+    "byteEnd": 100,
+    "kind": "module",
+    "name": "main",
+    "parents": [],
+    "references": []
+  }
+]

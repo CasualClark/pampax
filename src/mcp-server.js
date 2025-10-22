@@ -9,6 +9,7 @@ import { z } from 'zod';
 import * as service from './service.js';
 import { resolveScopeWithPack } from './context/packs.js';
 import { registerUseContextPackTool } from './mcp/tools/useContextPack.js';
+import ProgressiveContextBuilder from './progressive/context-builder.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -140,6 +141,9 @@ class ErrorLogger {
 
 // Global logger instance
 let errorLogger = new ErrorLogger();
+
+// Progressive context builder instance
+let contextBuilder = null;
 
 // ============================================================================
 // VALIDATION UTILITY FUNCTIONS
@@ -954,6 +958,195 @@ server.tool(
                         `- Install necessary dependencies (npm install)\n` +
                         `- Try with a different provider\n` +
                         `- Check write permissions in the directory`
+                }],
+                isError: true
+            };
+        }
+    }
+);
+
+/**
+ * Tool for progressive context loading
+ * 
+ * This tool provides code context at increasing detail levels to minimize token usage.
+ * Start with 'outline' to see what's available, then request specific files at higher detail.
+ */
+server.tool(
+    "get_context_progressive",
+    {
+        query: z.string().min(2, "Query cannot be empty").describe("Search query to find relevant code"),
+        detail_level: z.enum(["outline", "signatures", "implementation", "full"]).optional().default("implementation").describe("Level of detail to retrieve"),
+        token_budget: z.number().optional().default(4000).describe("Maximum tokens to return"),
+        specific_files: z.array(z.string()).optional().default([]).describe("Specific file paths to retrieve (optional)"),
+        include_related: z.boolean().optional().default(true).describe("Include imported/related files"),
+        path: z.string().optional().default(".").describe("PROJECT ROOT directory path where PAMPAX database is located")
+    },
+    async ({ query, detail_level, token_budget, specific_files, include_related, path: workingPath }) => {
+        const context = { query, detail_level, token_budget, specific_files, include_related, workingPath, timestamp: new Date().toISOString() };
+
+        // Update logger working path
+        errorLogger.updateWorkingPath(workingPath || '.');
+
+        if (debugMode) {
+            errorLogger.debugLog('get_context_progressive tool called', context);
+        }
+
+        try {
+            // Validate parameters
+            const cleanQuery = query.trim();
+            const cleanPath = workingPath ? workingPath.trim() : '.';
+
+            if (cleanQuery.length === 0) {
+                return {
+                    content: [{
+                        type: "text",
+                        text: `ERROR: Query cannot be empty.\n\nProvide a valid query like:\n- "authentication"\n- "payment processing"\n- "user management"`
+                    }],
+                    isError: true
+                };
+            }
+
+            // Environment validations
+            const envErrors = validateEnvironment(cleanPath);
+            if (envErrors.length > 0) {
+                const errorMsg = `ENVIRONMENT ERRORS in ${cleanPath}:\n${envErrors.map(e => `- ${e}`).join('\n')}`;
+                return {
+                    content: [{
+                        type: "text",
+                        text: errorMsg + `\n\nSolution: Run index_project on the project root directory: ${cleanPath}`
+                    }],
+                    isError: true
+                };
+            }
+
+            // Initialize context builder if needed
+            if (!contextBuilder) {
+                // Create a simple vector store interface for the progressive context builder
+                const vectorStore = {
+                    search: async (query, options) => {
+                        const searchResult = await service.searchCode(query, options.limit || 10, 'auto', cleanPath, {});
+                        if (!searchResult.success) {
+                            return [];
+                        }
+                        return searchResult.results.map(result => ({
+                            path: result.path,
+                            language: result.lang,
+                            symbols: [{ name: result.meta.symbol, exported: true }],
+                            content: '', // Will be loaded when needed
+                            score: result.meta.score
+                        }));
+                    },
+                    getFileByPath: async (filePath) => {
+                        // For now, return a basic structure
+                        // In a full implementation, this would load the actual file
+                        return {
+                            path: filePath,
+                            language: filePath.split('.').pop(),
+                            symbols: [],
+                            content: ''
+                        };
+                    }
+                };
+                contextBuilder = new ProgressiveContextBuilder(vectorStore);
+            }
+
+            // Generate session ID
+            const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            const result = await safeAsyncCall(
+                () => contextBuilder.buildContext({
+                    query: cleanQuery,
+                    detail_level,
+                    token_budget,
+                    specific_files,
+                    include_related,
+                    session_id: sessionId
+                }),
+                { ...context, query: cleanQuery, workingPath: cleanPath, step: 'progressive_context_call' }
+            );
+
+            if (debugMode) {
+                errorLogger.debugLog('get_context_progressive completed successfully', {
+                    query: cleanQuery,
+                    detail_level,
+                    files_found: result.files_found,
+                    files_included: result.files_included,
+                    tokens_used: result.token_usage.used,
+                    cache_hit: result._cached || false
+                });
+            }
+
+            // Format response
+            let responseText = `🔍 Progressive context for: "${cleanQuery}"\n` +
+                `📊 Detail level: ${detail_level}\n` +
+                `📁 Files found: ${result.files_found}\n` +
+                `📝 Files included: ${result.files_included}\n` +
+                `💰 Tokens used: ${result.token_usage.used}/${result.token_usage.budget} (${result.token_usage.percentage}%)\n\n`;
+
+            // Add results
+            if (result.results.length > 0) {
+                responseText += `📋 Results:\n`;
+                result.results.forEach((item, index) => {
+                    responseText += `\n${index + 1}. ${item.file}\n`;
+                    if (item.type) responseText += `   Type: ${item.type}\n`;
+                    if (item.exports && item.exports.length > 0) {
+                        responseText += `   Exports: ${item.exports.join(', ')}\n`;
+                    }
+                    if (item.summary) {
+                        responseText += `   Summary: ${item.summary}\n`;
+                    }
+                    if (item._truncated) {
+                        responseText += `   ⚠️ Truncated - exceeded token budget\n`;
+                    }
+                });
+            } else {
+                responseText += `No results found for query: "${cleanQuery}"\n`;
+            }
+
+            // Add next steps if available
+            if (result.next_steps && result.next_steps.length > 0) {
+                responseText += `\n💡 Suggested next steps:\n`;
+                result.next_steps.forEach((step, index) => {
+                    responseText += `${index + 1}. ${step.action}: ${step.reason}\n`;
+                    if (step.detail_level) {
+                        responseText += `   Use detail_level="${step.detail_level}"\n`;
+                    }
+                    if (step.example_files && step.example_files.length > 0) {
+                        responseText += `   Example files: ${step.example_files.slice(0, 3).join(', ')}\n`;
+                    }
+                });
+            }
+
+            // Add cache info
+            if (result._cached) {
+                responseText += `\n📋 Result retrieved from cache`;
+            }
+
+            return {
+                content: [{
+                    type: "text",
+                    text: responseText
+                }],
+                isError: false
+            };
+
+        } catch (error) {
+            await errorLogger.logAsync(error, { ...context, step: 'get_context_progressive_tool' });
+
+            return {
+                content: [{
+                    type: "text",
+                    text: `ERROR in progressive context: ${error.message}\n\n` +
+                        `Technical details:\n` +
+                        `- Query: ${query}\n` +
+                        `- Detail level: ${detail_level}\n` +
+                        `- Project path: ${workingPath}\n` +
+                        `- Timestamp: ${context.timestamp}\n\n` +
+                        `Error logged to ${errorLogger.errorLogPath}\n\n` +
+                        `Possible solutions:\n` +
+                        `- Verify the project is indexed with index_project\n` +
+                        `- Check that the query is valid\n` +
+                        `- Try with a different detail level`
                 }],
                 isError: true
             };

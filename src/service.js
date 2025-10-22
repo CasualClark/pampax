@@ -99,6 +99,37 @@ async function initializeNativeDependencies() {
     LangTSX = (await import('tree-sitter-typescript/bindings/node/tsx.js')).default;
     LangTS = (await import('tree-sitter-typescript/bindings/node/typescript.js')).default;
     
+    // Update RESOLVED_LANGUAGES after all parsers load
+    RESOLVED_LANGUAGES.bash = resolveTreeSitterLanguage(LangBash);
+    RESOLVED_LANGUAGES.c = resolveTreeSitterLanguage(LangC);
+    RESOLVED_LANGUAGES.csharp = resolveTreeSitterLanguage(LangCSharp);
+    RESOLVED_LANGUAGES.cpp = resolveTreeSitterLanguage(LangCpp);
+    RESOLVED_LANGUAGES.css = resolveTreeSitterLanguage(LangCSS);
+    RESOLVED_LANGUAGES.elixir = resolveTreeSitterLanguage(LangElixir);
+    RESOLVED_LANGUAGES.go = resolveTreeSitterLanguage(LangGo);
+    RESOLVED_LANGUAGES.haskell = resolveTreeSitterLanguage(LangHaskell);
+    RESOLVED_LANGUAGES.html = resolveTreeSitterLanguage(LangHTML);
+    RESOLVED_LANGUAGES.java = resolveTreeSitterLanguage(LangJava);
+    RESOLVED_LANGUAGES.javascript = resolveTreeSitterLanguage(LangJS, 'javascript');
+    RESOLVED_LANGUAGES.json = resolveTreeSitterLanguage(LangJSON);
+    RESOLVED_LANGUAGES.kotlin = resolveTreeSitterLanguage(LangKotlin);
+    RESOLVED_LANGUAGES.lua = resolveTreeSitterLanguage(LangLua);
+    RESOLVED_LANGUAGES.ocaml = resolveTreeSitterLanguage(LangOCaml, 'ocaml');
+    RESOLVED_LANGUAGES.php = resolveTreeSitterLanguage(LangPHP, 'php');
+    RESOLVED_LANGUAGES.python = resolveTreeSitterLanguage(LangPython);
+    RESOLVED_LANGUAGES.ruby = resolveTreeSitterLanguage(LangRuby);
+    RESOLVED_LANGUAGES.rust = resolveTreeSitterLanguage(LangRust);
+    RESOLVED_LANGUAGES.scala = resolveTreeSitterLanguage(LangScala);
+    RESOLVED_LANGUAGES.swift = resolveTreeSitterLanguage(LangSwift);
+    RESOLVED_LANGUAGES.tsx = resolveTreeSitterLanguage(LangTSX);
+    RESOLVED_LANGUAGES.typescript = resolveTreeSitterLanguage(LangTS);
+    
+    // Function to update LANG_RULES after it's defined
+    updateLangRules();
+    
+    // Function to update LANG_RULES will be called after LANG_RULES is defined
+    setTimeout(() => updateLangRules(), 0);
+    
     console.log('Tree-sitter parsers loaded successfully');
   } catch (e) {
     console.warn('Tree-sitter parsers not available, using basic symbol extraction:', e.message);
@@ -559,6 +590,16 @@ const LANG_RULES = {
         commentPattern: /#.*$/gm
     }
 };
+
+// Function to update LANG_RULES with resolved languages after async loading
+function updateLangRules() {
+    Object.keys(LANG_RULES).forEach(ext => {
+        const rule = LANG_RULES[ext];
+        if (rule && rule.lang && RESOLVED_LANGUAGES[rule.lang]) {
+            rule.ts = RESOLVED_LANGUAGES[rule.lang];
+        }
+    });
+}
 
 export function getSupportedLanguageExtensions() {
     return Object.keys(LANG_RULES);

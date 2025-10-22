@@ -1,0 +1,7 @@
+{
+  "lsp": { "python": true, "dart": true },
+  "treesitter": { "enabled": true },
+  "scip": { "read": true },
+  "vectors": { "sqlite_vec": true, "pgvector": false },
+  "ui": { "json": false, "tty": true }
+}
