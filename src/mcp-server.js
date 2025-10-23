@@ -9,6 +9,7 @@ import { z } from 'zod';
 import * as service from './service.js';
 import { resolveScopeWithPack } from './context/packs.js';
 import { registerUseContextPackTool } from './mcp/tools/useContextPack.js';
+import { registerMemoryTools } from './mcp/tools/memory.js';
 import ProgressiveContextBuilder from './progressive/context-builder.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -201,6 +202,12 @@ registerUseContextPackTool(server, {
     clearSessionPack: () => {
         sessionContextPack = null;
     },
+    errorLogger
+});
+
+// Register memory tools
+registerMemoryTools(server, {
+    getWorkingPath: () => currentWorkingPath,
     errorLogger
 });
 

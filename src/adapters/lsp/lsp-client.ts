@@ -432,10 +432,10 @@ export class LSPClient extends EventEmitter {
      */
     private cleanup(): void {
         // Clear pending requests
-        for (const [id, pending] of this.pendingRequests) {
+        this.pendingRequests.forEach((pending, id) => {
             clearTimeout(pending.timeout);
             pending.reject(new Error('LSP client disconnected'));
-        }
+        });
         this.pendingRequests.clear();
 
         // Kill process

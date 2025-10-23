@@ -2,7 +2,8 @@
 name: Database
 description: Schema design, migrations, query optimization, and data integrity
 mode: subagent
-model: zai-coding-plan/glm-4.6
+#model: zai-coding-plan/glm-4.6
+model: chutes/zai-org/GLM-4.6-FP8
 temperature: 0.6
 permission:
   edit: allow

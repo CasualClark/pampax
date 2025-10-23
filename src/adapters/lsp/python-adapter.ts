@@ -17,7 +17,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 
 // Import Tree-sitter adapter for fallback
-import { PythonTreeSitterAdapter } from '../../../adapters/treesitter/python-adapter.js';
+import { TreeSitterAdapter } from '../treesitter/treesitter-adapter.js';
 
 export interface PythonLSPAdapterOptions {
     /**
@@ -88,7 +88,7 @@ export class PythonLSPAdapter extends BaseAdapter implements Adapter {
     readonly id = 'lsp-python';
     
     private lspClient: LSPClient | null = null;
-    private fallbackAdapter: PythonTreeSitterAdapter;
+    private fallbackAdapter: TreeSitterAdapter;
     private config: PythonLSPConfig;
     private isLSPAvailable = false;
     private lspInitializationPromise: Promise<void> | null = null;
@@ -112,7 +112,7 @@ export class PythonLSPAdapter extends BaseAdapter implements Adapter {
             maxLSPFiles: options.maxLSPFiles || 100
         };
 
-        this.fallbackAdapter = new PythonTreeSitterAdapter();
+        this.fallbackAdapter = new TreeSitterAdapter();
     }
 
     /**

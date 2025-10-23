@@ -11,6 +11,7 @@ const logger = {
   debug: (message, meta) => process.env.DEBUG && console.log(`DEBUG: ${message}`, meta || '')
 };
 import { createProgressRenderer } from '../progress/renderer.js';
+import { rerank, getAvailableProviders, getAvailableModels, getRerankerStats } from '../../ranking/reranker-service.js';
 
 /**
  * RRF (Reciprocal Rank Fusion) implementation
@@ -63,61 +64,41 @@ async function loadInputResults(inputPaths) {
 }
 
 /**
- * Cross-encoder reranking with API providers
+ * Reranking using the new provider system
  */
-async function crossEncoderRerank(query, results, provider, options = {}) {
-  const apiKey = options.apiKey || process.env[`${provider.toUpperCase()}_API_KEY`];
-  
-  if (!apiKey) {
-    throw new Error(`API key required for ${provider}. Set ${provider.toUpperCase()}_API_KEY environment variable.`);
-  }
-
-  const baseUrl = options.baseUrl || getDefaultBaseUrl(provider);
-  
+async function performReranking(query, results, provider, options = {}) {
   // Prepare documents for reranking
   const documents = results.map(result => ({
-    id: result.id || `${result.path}:${result.byteStart}`,
-    text: result.content || result.text || `${result.path}: ${result.metadata?.spanName || ''}`
+    id: result.id || `${result.path}:${result.byteStart || 0}`,
+    text: result.content || result.text || `${result.path}: ${result.metadata?.spanName || ''}`,
+    path: result.path,
+    metadata: result.metadata
   }));
 
   try {
-    const response = await fetch(`${baseUrl}/rerank`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: options.model || getDefaultModel(provider),
-        query,
-        documents,
-        top_k: options.topK || results.length
-      })
+    const rerankResult = await rerank(query, documents, {
+      provider,
+      ...options
     });
 
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    
-    // Map reranked results back to original results
-    const rerankedResults = data.results.map(rerankResult => {
+    // Map reranked results back to original results format
+    return rerankResult.results.map(rerankResult => {
       const originalResult = results.find(r => 
-        (r.id || `${r.path}:${r.byteStart}`) === rerankResult.document.id
+        (r.id || `${r.path}:${r.byteStart || 0}`) === (rerankResult.document?.id || `${rerankResult.document?.path}:0`)
       );
       
       return {
         ...originalResult,
+        ...rerankResult.document,
         rerankScore: rerankResult.relevance_score,
-        originalScore: originalResult.score || 0
+        originalScore: originalResult?.score || 0,
+        fusedScore: rerankResult.fusedScore,
+        cached: rerankResult.cached
       };
     });
 
-    return rerankedResults.sort((a, b) => b.rerankScore - a.rerankScore);
-
   } catch (error) {
-    logger.error('Cross-encoder reranking failed', { 
+    logger.error('Reranking failed', { 
       error: error.message, 
       provider,
       query: query.substring(0, 100) 
@@ -206,12 +187,70 @@ class RerankCache {
  * Main rerank command implementation
  */
 export async function rerankCommand(query, options = {}) {
-  const provider = options.provider || 'rrf';
+  const provider = options.provider || 'local';
   const input = options.input || [];
   const topK = parseInt(options.topK || options.k || '20');
   const json = options.json || false;
   const verbose = options.verbose || false;
   const useCache = !options.noCache;
+  const listProviders = options.listProviders || false;
+  const listModels = options.listModels || false;
+  const stats = options.stats || false;
+
+  // Handle special commands
+  if (listProviders) {
+    const providers = await getAvailableProviders();
+    if (json) {
+      console.log(JSON.stringify(providers, null, 2));
+    } else {
+      console.log('\nAvailable Reranker Providers:\n');
+      providers.forEach(p => {
+        console.log(`${p.name}: ${p.description}`);
+        console.log(`  Available: ${p.available ? '✓' : '✗'}`);
+        if (p.error) console.log(`  Error: ${p.error}`);
+        if (p.models.length > 0) {
+          console.log(`  Models: ${p.models.slice(0, 3).join(', ')}${p.models.length > 3 ? '...' : ''}`);
+        }
+        console.log('');
+      });
+    }
+    return;
+  }
+
+  if (listModels) {
+    const models = await getAvailableModels(provider);
+    if (json) {
+      console.log(JSON.stringify({ provider, models }, null, 2));
+    } else {
+      console.log(`\nAvailable models for ${provider}:\n`);
+      if (models.length === 0) {
+        console.log('No models available (provider may not be configured)');
+      } else {
+        models.forEach(model => console.log(`  - ${model}`));
+      }
+      console.log('');
+    }
+    return;
+  }
+
+  if (stats) {
+    const rerankerStats = await getRerankerStats();
+    if (json) {
+      console.log(JSON.stringify(rerankerStats, null, 2));
+    } else {
+      console.log('\nReranker Service Statistics:\n');
+      console.log(`Available providers: ${rerankerStats.available_providers}/${rerankerStats.total_providers}`);
+      console.log(`Default provider: ${rerankerStats.default_provider}`);
+      console.log(`Fallback provider: ${rerankerStats.fallback_provider}`);
+      console.log(`Cache enabled: ${rerankerStats.cache_enabled ? '✓' : '✗'}`);
+      console.log('\nProvider Details:');
+      rerankerStats.providers.forEach(p => {
+        console.log(`  ${p.name}: ${p.available ? '✓' : '✗'} (${p.model_count} models)`);
+      });
+      console.log('');
+    }
+    return;
+  }
 
   // Progress setup
   const isTTY = process.stdout.isTTY && !json;
@@ -230,7 +269,7 @@ export async function rerankCommand(query, options = {}) {
         progress.update('Performing RRF fusion...');
         results = reciprocalRankFusion(inputResults);
       } else {
-        // Flatten results for cross-encoder reranking
+        // Flatten results for reranking
         results = inputResults.flat();
       }
       
@@ -243,24 +282,11 @@ export async function rerankCommand(query, options = {}) {
     // Apply reranking
     if (provider !== 'rrf') {
       progress.update(`Reranking with ${provider}...`);
-      
-      const cache = useCache ? new RerankCache() : null;
-      
-      // Check cache first
-      if (cache) {
-        const cached = cache.get(query, provider, results);
-        if (cached) {
-          progress.complete(`Using cached results from ${new Date(cached.timestamp).toISOString()}`);
-          results = cached.results;
-        } else {
-          results = await crossEncoderRerank(query, results, provider, options);
-          cache.set(query, provider, results, results);
-          progress.complete(`Reranked ${results.length} results with ${provider}`);
-        }
-      } else {
-        results = await crossEncoderRerank(query, results, provider, options);
-        progress.complete(`Reranked ${results.length} results with ${provider}`);
-      }
+      results = await performReranking(query, results, provider, {
+        ...options,
+        noCache: !useCache
+      });
+      progress.complete(`Reranked ${results.length} results with ${provider}`);
     }
 
     // Limit results
@@ -279,6 +305,7 @@ export async function rerankCommand(query, options = {}) {
           score: result.score,
           fusedScore: result.fusedScore,
           rerankScore: result.rerankScore,
+          cached: result.cached,
           metadata: result.metadata
         })),
         totalResults: finalResults.length,
@@ -302,6 +329,10 @@ export async function rerankCommand(query, options = {}) {
           console.log(`   Original Score: ${result.score.toFixed(4)}`);
         }
         
+        if (result.cached !== undefined) {
+          console.log(`   Cached: ${result.cached ? '✓' : '✗'}`);
+        }
+        
         if (result.metadata?.spanName) {
           console.log(`   Symbol: ${result.metadata.spanName}`);
         }
@@ -313,6 +344,10 @@ export async function rerankCommand(query, options = {}) {
         console.log(`Reranking completed in ${duration}ms`);
         console.log(`Provider: ${provider}`);
         console.log(`Total results: ${finalResults.length}/${results.length}`);
+        const cachedCount = finalResults.filter(r => r.cached).length;
+        if (cachedCount > 0) {
+          console.log(`Cached results: ${cachedCount}`);
+        }
       }
     }
 
@@ -337,17 +372,22 @@ export async function rerankCommand(query, options = {}) {
 
 export function configureRerankCommand(program) {
   program
-    .command('rerank <query>')
-    .description('Rerank search results using RRF fusion or cross-encoder providers')
-    .option('--provider <provider>', 'Reranking provider (rrf|cohere|voyage)', 'rrf')
+    .command('rerank [query]')
+    .description('Rerank search results using local cross-encoders, API providers, or RRF fusion')
+    .option('--provider <provider>', 'Reranking provider (local|api|rrf|cohere|voyage)', 'local')
     .option('--input <files...>', 'Input result files (JSON format)')
     .option('--topK <num>', 'Number of top results to return', '20')
     .option('-k, --k <num>', 'Alias for --topK')
-    .option('--api-key <key>', 'API key for cross-encoder providers')
-    .option('--model <model>', 'Model name for cross-encoder providers')
-    .option('--base-url <url>', 'Base URL for API')
+    .option('--model <model>', 'Model name for reranking provider')
+    .option('--api-key <key>', 'API key for cloud providers')
+    .option('--api-url <url>', 'API URL for cloud providers')
+    .option('--max-candidates <num>', 'Maximum candidates to rerank', '50')
+    .option('--max-tokens <num>', 'Maximum tokens per document', '512')
     .option('--no-cache', 'Disable caching')
     .option('--json', 'Output in JSON format')
     .option('--verbose', 'Verbose output')
+    .option('--list-providers', 'List available reranking providers')
+    .option('--list-models', 'List available models for provider')
+    .option('--stats', 'Show reranker service statistics')
     .action(rerankCommand);
 }

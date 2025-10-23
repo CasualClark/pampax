@@ -3,6 +3,7 @@
 import sqlite3 from 'sqlite3';
 import { dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { MemoryOperations } from './memory-operations.js';
 
 // Simple migration definitions
 const migrations = [
@@ -95,6 +96,123 @@ const migrations = [
       db.exec('DROP TABLE IF EXISTS span');
       db.exec('DROP TABLE IF EXISTS file');
     }
+  },
+  {
+    version: 2,
+    name: 'create_memory_tables',
+    up: (db) => {
+      // Memory table
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory (
+          id TEXT PRIMARY KEY,
+          scope TEXT CHECK(scope IN ('repo','workspace','global')) NOT NULL,
+          repo TEXT,
+          branch TEXT,
+          kind TEXT CHECK(kind IN ('fact','gotcha','decision','plan','rule','name-alias','insight','exemplar')) NOT NULL,
+          key TEXT,
+          value TEXT NOT NULL,
+          weight REAL DEFAULT 1.0,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          source_json TEXT NOT NULL
+        )
+      `);
+
+      // Session table
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session (
+          id TEXT PRIMARY KEY,
+          tool TEXT,
+          user TEXT,
+          repo TEXT,
+          branch TEXT,
+          started_at INTEGER,
+          finished_at INTEGER
+        )
+      `);
+
+      // Interaction table
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS interaction (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT REFERENCES session(id),
+          ts INTEGER NOT NULL,
+          query TEXT NOT NULL,
+          bundle_id TEXT,
+          satisfied INTEGER,
+          notes TEXT
+        )
+      `);
+
+      // Memory link table
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_link (
+          src TEXT,
+          dst TEXT,
+          kind TEXT,
+          score REAL,
+          PRIMARY KEY (src,dst,kind)
+        )
+      `);
+
+      // Indexes for performance
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory(scope)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory(kind)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_repo ON memory(repo)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_key ON memory(key)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_created_at ON memory(created_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_expires_at ON memory(expires_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_session_tool ON session(tool)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_session_started_at ON session(started_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_interaction_session_id ON interaction(session_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_interaction_ts ON interaction(ts)');
+
+      // FTS for memory content
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+          value,
+          key,
+          kind,
+          scope,
+          content=memory,
+          content_rowid=rowid
+        )
+      `);
+
+      // Triggers to keep memory FTS in sync
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN
+          INSERT INTO memory_fts(rowid, value, key, kind, scope) 
+          VALUES (new.rowid, new.value, new.key, new.kind, new.scope);
+        END
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN
+          INSERT INTO memory_fts(memory_fts, rowid, value, key, kind, scope) 
+          VALUES('delete', old.rowid, old.value, old.key, old.kind, old.scope);
+        END
+      `);
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
+          INSERT INTO memory_fts(memory_fts, rowid, value, key, kind, scope) 
+          VALUES('delete', old.rowid, old.value, old.key, old.kind, old.scope);
+          INSERT INTO memory_fts(rowid, value, key, kind, scope) 
+          VALUES (new.rowid, new.value, new.key, new.kind, new.scope);
+        END
+      `);
+    },
+    down: (db) => {
+      db.exec('DROP TRIGGER IF EXISTS memory_ai');
+      db.exec('DROP TRIGGER IF EXISTS memory_ad');
+      db.exec('DROP TRIGGER IF EXISTS memory_au');
+      db.exec('DROP TABLE IF EXISTS memory_fts');
+      db.exec('DROP TABLE IF EXISTS memory_link');
+      db.exec('DROP TABLE IF EXISTS interaction');
+      db.exec('DROP TABLE IF EXISTS session');
+      db.exec('DROP TABLE IF EXISTS memory');
+    }
   }
 ];
 
@@ -105,6 +223,7 @@ export class Database {
   constructor(dbPath) {
     this.dbPath = dbPath;
     this.db = null;
+    this.memory = null;
   }
 
   async initialize() {
@@ -123,6 +242,10 @@ export class Database {
           this.db.run('PRAGMA journal_mode = WAL');
           this.db.run('PRAGMA synchronous = NORMAL');
           this.db.run('PRAGMA foreign_keys = ON');
+          
+          // Initialize memory operations
+          this.memory = new MemoryOperations(this.db);
+          
           resolve();
         }
       });

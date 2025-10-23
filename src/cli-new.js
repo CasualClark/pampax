@@ -11,6 +11,8 @@ import { configureIndexCommand } from './cli/commands/index.js';
 import { configureSearchCommand } from './cli/commands/search.js';
 import { configureRerankCommand } from './cli/commands/rerank.js';
 import { configureUICommand } from './cli/commands/ui.js';
+import { configureMemoryCommands } from './cli/commands/remember.js';
+import { configureIntentCommand } from './cli/commands/intent.js';
 
 // Import existing commands
 import { registerContextCommands } from './cli/commands/context.js';
@@ -19,7 +21,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Read version from package.json
-const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+const packageJsonPath = fs.existsSync(path.join(__dirname, '..', 'package.json')) 
+    ? path.join(__dirname, '..', 'package.json') 
+    : path.join(__dirname, 'package.json');
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 const program = new Command();
 program
@@ -33,6 +38,8 @@ configureIndexCommand(program);
 configureSearchCommand(program);
 configureRerankCommand(program);
 configureUICommand(program);
+configureMemoryCommands(program);
+configureIntentCommand(program);
 
 // Keep existing context commands
 registerContextCommands(program);
@@ -243,6 +250,11 @@ Core Commands:
   search       Search indexed code with FTS support
   rerank       Rerank search results using RRF or cross-encoder
   ui           Interactive UI and status visualization
+  remember     Store memories with provenance
+  recall       Search and retrieve memories
+  forget       Delete memories
+  pin          Pin spans with labels
+  intent       Intent analysis and policy debugging tools
 
 Legacy Commands:
   index-legacy Legacy indexing (deprecated)
@@ -255,8 +267,15 @@ Examples:
   pampax migrate --db .pampax/pampax.sqlite
   pampax index --repo ./myrepo --include "src/**/*.py"
   pampax search "router init" --k 20
+  pampax search "getUserById function" --intent --explain-intent
+  pampax search "config settings" --force-intent config --policy
+  pampax intent analyze "how to implement user authentication"
+  pampax intent show symbol --lang python --verbose
   pampax rerank "http server" --provider rrf --input results.json
   pampax ui --mode status
+  pampax remember --kind gotcha --key "auth-pattern" --value "Use JWT for API auth"
+  pampax recall "authentication" --limit 5
+  pampax pin --span s_abc123 --label "public API"
 
 Migration from legacy:
   The new CLI uses SQLite storage instead of JSON codemap.

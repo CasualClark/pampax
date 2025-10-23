@@ -172,6 +172,17 @@
             "template": ".opencode/command/analyze-performance.md",
         },
     },
+    "agent": {
+        "build": {
+            "disable": true,
+        },
+        "plan": {
+            "disable": true,
+        },
+        "general": {
+            "disable": true,
+        },
+    },
     "formatter": {
         "prettier": { "disabled": false },
         "ruff": {

@@ -2,6 +2,8 @@ import { featureFlags, type FeatureFlags } from './feature-flags.js';
 import { logger, type LoggerConfig } from './logger.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import type { IntentClassifierConfig } from '../intent/intent-classifier.js';
+import type { PolicyConfig } from '../policy/policy-gate.js';
 
 export interface PampaxConfig {
   featureFlags: FeatureFlags;
@@ -19,6 +21,8 @@ export interface PampaxConfig {
     path?: string;
     type?: 'sqlite' | 'postgres';
   };
+  intent?: IntentClassifierConfig;
+  policy?: PolicyConfig;
 }
 
 export class ConfigLoader {

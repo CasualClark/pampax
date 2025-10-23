@@ -34,7 +34,7 @@ Use this schema whenever you create tasks (put it inline in your message so it's
 {
   description: string,
   prompt: string,
-  subagent_type: "Engineer" | "Frontend" | "Database" | "DevOps" | "Builder" | "Knowledge" | "Reviewer",
+  subagent_type: "Engineer" | "Frontend" | "Database" | "Generlist" | "DevOps" | "Builder" | "Knowledge" | "Reviewer",
   provides?: string[],
   depends_on?: string[],
   acceptance?: string[]

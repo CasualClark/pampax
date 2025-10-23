@@ -1,0 +1,77 @@
+{
+  "policy": {
+    "symbol": {
+      "maxDepth": 2,
+      "includeSymbols": true,
+      "includeFiles": false,
+      "includeContent": true,
+      "earlyStopThreshold": 3,
+      "seedWeights": {
+        "definition": 2.0,
+        "declaration": 1.8,
+        "implementation": 1.5,
+        "usage": 1.0,
+        "test": 0.8,
+        "reference": 0.5
+      }
+    },
+    "config": {
+      "maxDepth": 1,
+      "includeSymbols": false,
+      "includeFiles": true,
+      "includeContent": true,
+      "earlyStopThreshold": 2,
+      "seedWeights": {
+        "config": 2.0,
+        "setting": 1.8,
+        "environment": 1.5,
+        "constant": 1.2,
+        "default": 1.0
+      }
+    },
+    "api": {
+      "maxDepth": 2,
+      "includeSymbols": true,
+      "includeFiles": false,
+      "includeContent": true,
+      "earlyStopThreshold": 2,
+      "seedWeights": {
+        "handler": 2.0,
+        "endpoint": 1.8,
+        "route": 1.5,
+        "controller": 1.3,
+        "middleware": 1.0,
+        "registration": 0.8
+      }
+    },
+    "incident": {
+      "maxDepth": 3,
+      "includeSymbols": true,
+      "includeFiles": true,
+      "includeContent": true,
+      "earlyStopThreshold": 5,
+      "seedWeights": {
+        "error": 2.5,
+        "exception": 2.2,
+        "caller": 2.0,
+        "stack": 1.8,
+        "diff": 1.5,
+        "recent": 1.2,
+        "related": 1.0
+      }
+    },
+    "search": {
+      "maxDepth": 2,
+      "includeSymbols": true,
+      "includeFiles": true,
+      "includeContent": true,
+      "earlyStopThreshold": 10,
+      "seedWeights": {
+        "match": 1.0,
+        "relevant": 0.9,
+        "similar": 0.8,
+        "related": 0.7
+      }
+    }
+  }
+}

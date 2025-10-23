@@ -2,7 +2,8 @@
 name: Engineer
 description: Spec-driven Python TDD implementation with pattern consistency
 mode: subagent
-model: zai-coding-plan/glm-4.6
+#model: zai-coding-plan/glm-4.6
+model: chutes/zai-org/GLM-4.6-turbo
 temperature: 0.6
 permission:
   edit: allow

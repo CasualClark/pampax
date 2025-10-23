@@ -10,6 +10,9 @@ const logger = {
   debug: (message, meta) => process.env.DEBUG && console.log(`DEBUG: ${message}`, meta || '')
 };
 import { createProgressRenderer } from '../progress/renderer.js';
+import { enhancedReciprocalRankFusion, getSeedMixConfig, applyEarlyStop } from '../../search/hybrid.js';
+import { intentClassifier } from '../../intent/intent-classifier.js';
+import { policyGate } from '../../policy/policy-gate.js';
 
 /**
  * Enhanced search command with FTS support
@@ -20,6 +23,12 @@ export async function searchCommand(query, options = {}) {
   const json = options.json || false;
   const verbose = options.verbose || false;
   const dbPath = options.db || path.join(repoPath, '.pampax/pampax.sqlite');
+  
+  // Intent-aware options
+  const showIntent = options.intent || false;
+  const showPolicy = options.policy || false;
+  const explainIntent = options.explainIntent || false;
+  const forceIntent = options.forceIntent || null;
 
   // Progress setup
   const isTTY = process.stdout.isTTY && !json;
@@ -49,10 +58,59 @@ export async function searchCommand(query, options = {}) {
 
     progress.start(`Searching for: "${query}"`);
 
-    // Perform search
+    // Classify intent for optimized search
+    let intent = intentClassifier.classify(query);
+    
+    // Handle forced intent override
+    if (forceIntent) {
+      const validIntents = ['symbol', 'config', 'api', 'incident', 'search'];
+      if (!validIntents.includes(forceIntent)) {
+        const error = `Invalid intent type: ${forceIntent}. Valid types: ${validIntents.join(', ')}`;
+        if (json) {
+          console.log(JSON.stringify({
+            success: false,
+            error,
+            query,
+            databasePath: dbPath
+          }, null, 2));
+        } else {
+          progress.error(error);
+        }
+        process.exit(1);
+      }
+      
+      // Override intent while preserving other properties
+      intent = {
+        ...intent,
+        intent: forceIntent,
+        confidence: 1.0 // Forced intent gets maximum confidence
+      };
+      logger.debug('Intent forced by user', { forcedIntent: forceIntent });
+    }
+    
+    logger.debug('Search intent classified', { intent: intent.intent, confidence: intent.confidence });
+
+    // Get search context for policy evaluation
+    const searchContext = {
+      repo: path.basename(repoPath),
+      queryLength: query.length,
+      budget: options.tokenBudget || 4000,
+      language: options.lang?.[0]
+    };
+
+    // Evaluate policy for intent-aware search
+    const policy = policyGate.evaluate(intent, searchContext);
+    logger.debug('Search policy evaluated', { maxDepth: policy.maxDepth, earlyStopThreshold: policy.earlyStopThreshold });
+
+    // Perform search with intent-aware optimization
     const startTime = Date.now();
-    const results = await db.search(query, {
-      limit,
+    
+    // Get seed mix configuration for this intent and policy
+    const seedConfig = getSeedMixConfig(intent, policy);
+    
+    // Perform multi-source search (simulated here - in real implementation would query different sources)
+    const searchResults = await db.search(query, {
+      limit: Math.max(limit, seedConfig.earlyStopThreshold * 2), // Get more results for better fusion
       includeContent: options.includeContent || false,
       filters: {
         pathGlob: options.path_glob,
@@ -60,21 +118,125 @@ export async function searchCommand(query, options = {}) {
         lang: options.lang
       }
     });
+
+    // Apply enhanced RRF with intent-aware weighting
+    let results;
+    if (options.useEnhancedSearch !== false) {
+      // For demonstration, split results into different sources
+      // In a real implementation, these would come from different search engines
+      const midPoint = Math.floor(searchResults.length / 2);
+      const vectorResults = searchResults.slice(0, midPoint);
+      const bm25Results = searchResults.slice(midPoint);
+      
+      results = enhancedReciprocalRankFusion({
+        vectorResults,
+        bm25Results,
+        intent,
+        policy,
+        limit
+      });
+    } else {
+      // Fallback to original search results
+      results = searchResults.slice(0, limit);
+    }
+
     const duration = Date.now() - startTime;
 
-    progress.complete(`Found ${results.length} results in ${duration}ms`);
+    progress.complete(`Found ${results.length} results in ${duration}ms (intent: ${intent.intent}, confidence: ${(intent.confidence * 100).toFixed(1)}%)`);
+
+    // Show intent explanation if requested
+    if (explainIntent && !json) {
+      console.log(`\n${chalk.blue('=== Intent Analysis ===')}`);
+      console.log(`Detected Intent: ${chalk.cyan(intent.intent)} (${chalk.yellow((intent.confidence * 100).toFixed(1) + '%')})`);
+      
+      if (intent.entities.length > 0) {
+        console.log(`\n${chalk.green('Entities Found:')}`);
+        intent.entities.forEach(entity => {
+          console.log(`  • ${entity.type}: "${chalk.white(entity.value)}" (position: ${entity.position})`);
+        });
+      }
+      
+      if (intent.suggestedPolicies.length > 0) {
+        console.log(`\n${chalk.green('Suggested Policies:')}`);
+        intent.suggestedPolicies.forEach(policy => {
+          console.log(`  • ${policy}`);
+        });
+      }
+      
+      if (forceIntent) {
+        console.log(`\n${chalk.yellow('⚠ Intent was forced by user override')}`);
+      }
+      console.log('');
+    }
+
+    // Show policy details if requested
+    if (showPolicy && !json) {
+      console.log(`\n${chalk.blue('=== Applied Policy ===')}`);
+      console.log(`Max Depth: ${chalk.cyan(policy.maxDepth)}`);
+      console.log(`Early Stop Threshold: ${chalk.cyan(policy.earlyStopThreshold)}`);
+      console.log(`Include Symbols: ${chalk.cyan(policy.includeSymbols)}`);
+      console.log(`Include Files: ${chalk.cyan(policy.includeFiles)}`);
+      console.log(`Include Content: ${chalk.cyan(policy.includeContent)}`);
+      
+      console.log(`\n${chalk.green('Seed Weights:')}`);
+      Object.entries(policy.seedWeights).forEach(([key, weight]) => {
+        console.log(`  • ${key}: ${chalk.yellow(weight.toFixed(2))}`);
+      });
+      console.log('');
+    }
+
+    // Show intent summary if requested (but not full explanation)
+    if (showIntent && !explainIntent && !json) {
+      console.log(`\n${chalk.blue('Intent:')} ${chalk.cyan(intent.intent)} (${chalk.yellow((intent.confidence * 100).toFixed(1) + '%')})`);
+      if (intent.entities.length > 0) {
+        console.log(`${chalk.blue('Entities:')} ${intent.entities.map(e => `${e.type}:"${e.value}"`).join(', ')}`);
+      }
+      console.log('');
+    }
 
     // Format and output results
     if (json) {
       console.log(JSON.stringify({
         success: true,
         query,
+        intent: showIntent || explainIntent ? {
+          type: intent.intent,
+          confidence: intent.confidence,
+          entities: intent.entities,
+          suggestedPolicies: intent.suggestedPolicies,
+          forced: forceIntent !== null
+        } : undefined,
+        policy: showPolicy ? {
+          maxDepth: policy.maxDepth,
+          earlyStopThreshold: policy.earlyStopThreshold,
+          includeSymbols: policy.includeSymbols,
+          includeFiles: policy.includeFiles,
+          includeContent: policy.includeContent,
+          seedWeights: policy.seedWeights
+        } : undefined,
+        optimization: {
+          seedConfig: {
+            vectorWeight: seedConfig.vectorWeight,
+            bm25Weight: seedConfig.bm25Weight,
+            memoryWeight: seedConfig.memoryWeight,
+            symbolWeight: seedConfig.symbolWeight,
+            maxDepth: seedConfig.maxDepth,
+            earlyStopThreshold: seedConfig.earlyStopThreshold
+          },
+          useEnhancedSearch: options.useEnhancedSearch !== false
+        },
         results: results.map(result => ({
           id: result.id,
           path: result.path,
           content: result.content,
           score: result.score,
-          metadata: result.metadata
+          metadata: result.metadata,
+          rankInfo: {
+            vectorRank: result.vectorRank,
+            bm25Rank: result.bm25Rank,
+            memoryRank: result.memoryRank,
+            symbolRank: result.symbolRank
+          }
         })),
         totalResults: results.length,
         durationMs: duration,
@@ -149,10 +311,9 @@ export async function ftsSearchCommand(query, options = {}) {
   try {
     const db = new Database(dbPath);
     
-    const results = await db.ftsSearch(query, {
+    const results = await db.search(query, {
       limit: parseInt(options.k || '10'),
-      offset: parseInt(options.offset || '0'),
-      orderBy: options.orderBy || 'rank',
+      includeContent: true,
       filters: {
         pathGlob: options.path_glob,
         lang: options.lang,
@@ -186,7 +347,7 @@ export async function ftsSearchCommand(query, options = {}) {
 export function configureSearchCommand(program) {
   const searchCmd = program
     .command('search <query>')
-    .description('Search indexed code with FTS support')
+    .description('Search indexed code with FTS support and intent-aware optimization')
     .option('--repo <path>', 'Repository path', '.')
     .option('--db <path>', 'Database file path')
     .option('-k, --limit <num>', 'Maximum number of results', '10')
@@ -196,6 +357,12 @@ export function configureSearchCommand(program) {
     .option('--include-content', 'Include content in results')
     .option('--json', 'Output in JSON format')
     .option('--verbose', 'Verbose output')
+    .option('--token-budget <num>', 'Token budget for search optimization', '4000')
+    .option('--no-enhanced-search', 'Disable intent-aware search optimization')
+    .option('--intent', 'Show classified intent information')
+    .option('--policy', 'Show applied policy configuration')
+    .option('--explain-intent', 'Show detailed intent classification explanation')
+    .option('--force-intent <type>', 'Force specific intent type (symbol|config|api|incident|search)')
     .action(searchCommand);
 
   // Add FTS subcommand

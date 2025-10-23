@@ -2,7 +2,7 @@
 name: Knowledge
 description: Evidence-based research and documentation; no code changes
 mode: subagent
-model: zai-coding-plan/glm-4.6
+model: chutes/zai-org/GLM-4.6-FP8
 temperature: 0.6
 permission:
   edit: deny

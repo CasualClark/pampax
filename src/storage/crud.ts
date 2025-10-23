@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { logger } from '../config/logger.js';
-import { HashUtils } from './migrations.js';
+import { HashUtils } from './hash-utils.js';
 import { SpanKind } from '../types/core.js';
 
 // Database interfaces

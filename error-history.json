@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2025-10-23T00:57:47.477Z",
+    "level": "ERROR",
+    "message": "Seed mix optimization failed",
+    "context": {
+      "error": "Invalid weight: 11.100000000000001. Must be between 0 and 5.",
+      "intent": "symbol"
+    }
+  },
+  {
+    "timestamp": "2025-10-23T00:57:47.482Z",
+    "level": "ERROR",
+    "message": "Seed mix optimization failed",
+    "context": {
+      "error": "Invalid weight: 5.550000000000001. Must be between 0 and 5.",
+      "intent": "symbol"
+    }
+  }
+]
