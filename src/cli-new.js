@@ -9,10 +9,15 @@ import { fileURLToPath } from 'url';
 import { configureMigrateCommand } from './cli/commands/migrate.js';
 import { configureIndexCommand } from './cli/commands/index.js';
 import { configureSearchCommand } from './cli/commands/search.js';
+import { configureGraphCommand } from './cli/commands/graph.js';
 import { configureRerankCommand } from './cli/commands/rerank.js';
 import { configureUICommand } from './cli/commands/ui.js';
 import { configureMemoryCommands } from './cli/commands/remember.js';
-import { configureIntentCommand } from './cli/commands/intent.js';
+// import { configureIntentCommand } from './cli/commands/intent.js';  // Temporarily disabled due to missing dependencies
+import { configureTokenCommand } from './cli/commands/token-simple.js';
+import { configureLearnCommand } from './cli/commands/learn.js';
+import { configureLearnReportCommand } from './cli/commands/learn-report.js';
+import { configureAnalyticsCommand } from './cli/commands/analytics.js';
 
 // Import existing commands
 import { registerContextCommands } from './cli/commands/context.js';
@@ -30,16 +35,23 @@ const program = new Command();
 program
     .name('pampax')
     .description('PAMPAX - Protocol for Augmented Memory of Project Artifacts')
-    .version(packageJson.version);
+    .version(packageJson.version)
+    .option('--target-model <model>', 'Target model for tokenization (gpt-4, gpt-3.5-turbo, claude-3, etc.)', 'default')
+    .option('--token-budget <num>', 'Session-wide token budget for context optimization');
 
 // Configure all new commands
 configureMigrateCommand(program);
 configureIndexCommand(program);
 configureSearchCommand(program);
+configureGraphCommand(program);
 configureRerankCommand(program);
 configureUICommand(program);
 configureMemoryCommands(program);
-configureIntentCommand(program);
+// configureIntentCommand(program);  // Temporarily disabled due to missing dependencies
+configureTokenCommand(program);
+configureLearnCommand(program);
+configureLearnReportCommand(program);
+configureAnalyticsCommand(program);
 
 // Keep existing context commands
 registerContextCommands(program);
@@ -248,6 +260,7 @@ Core Commands:
   migrate      Manage database migrations
   index        Index project files for search
   search       Search indexed code with FTS support
+  graph        Analyze code graph with symbol neighbors
   rerank       Rerank search results using RRF or cross-encoder
   ui           Interactive UI and status visualization
   remember     Store memories with provenance
@@ -255,6 +268,7 @@ Core Commands:
   forget       Delete memories
   pin          Pin spans with labels
   intent       Intent analysis and policy debugging tools
+  token        Token counting and budget management utilities
 
 Legacy Commands:
   index-legacy Legacy indexing (deprecated)
@@ -263,12 +277,23 @@ Legacy Commands:
   info         Show project information
   context      Context pack management
 
+Global Options:
+  --target-model <model>    Target model for tokenization (gpt-4, gpt-3.5-turbo, claude-3, etc.)
+  --token-budget <num>      Session-wide token budget for context optimization
+
 Examples:
   pampax migrate --db .pampax/pampax.sqlite
   pampax index --repo ./myrepo --include "src/**/*.py"
-  pampax search "router init" --k 20
-  pampax search "getUserById function" --intent --explain-intent
-  pampax search "config settings" --force-intent config --policy
+  pampax search "router init" --k 20 --target-model gpt-4 --token-report
+  pampax search "getUserById function" --callers 1 --callees 1 --budget 3000
+  pampax search "config settings" --force-intent config --policy --token-report
+  pampax graph --symbol "authenticate" --neighbors 2 --types call,import
+  pampax graph --symbol "UserModel" --neighbors 3 --max-nodes 20 --verbose
+  pampax graph find "router" --lang javascript
+  pampax token count "function test() {}" --model gpt-4
+  pampax token profile . --model claude-3
+  pampax token budget 5000 --model gpt-3.5-turbo
+  pampax token models
   pampax intent analyze "how to implement user authentication"
   pampax intent show symbol --lang python --verbose
   pampax rerank "http server" --provider rrf --input results.json

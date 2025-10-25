@@ -316,4 +316,4 @@ test('progress renderer - TTY vs non-TTY', async () => {
   assert.equal(events[2].type, 'complete');
 });
 
-console.log('✅ All CLI command tests passed!');
+// All CLI command tests completed

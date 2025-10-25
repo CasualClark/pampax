@@ -2,17 +2,141 @@
 
 import path from 'path';
 import { Database } from '../../storage/database-simple.js';
-// Simple logger fallback
-const logger = {
-  error: (message, meta) => console.error(`ERROR: ${message}`, meta || ''),
-  info: (message, meta) => console.log(`INFO: ${message}`, meta || ''),
-  warn: (message, meta) => console.warn(`WARN: ${message}`, meta || ''),
-  debug: (message, meta) => process.env.DEBUG && console.log(`DEBUG: ${message}`, meta || '')
-};
+import { getLogger } from '../../utils/structured-logger.js';
+
+const logger = getLogger('cli-search');
 import { createProgressRenderer } from '../progress/renderer.js';
-import { enhancedReciprocalRankFusion, getSeedMixConfig, applyEarlyStop } from '../../search/hybrid.js';
-import { intentClassifier } from '../../intent/intent-classifier.js';
+import { enhancedReciprocalRankFusion, getSeedMixConfig } from '../../search/hybrid.js';
+import { intentClassifier } from '../../intent/index.js';
 import { policyGate } from '../../policy/policy-gate.js';
+import { PackingProfileManager, MODEL_PROFILES } from '../../tokenization/packing-profiles.js';
+import { createTokenizer } from '../../tokenization/tokenizer-factory.js';
+import fs from 'fs';
+
+
+
+/**
+ * Load token budget from session config
+ */
+function loadTokenBudget(repoPath, model) {
+  try {
+    const budgetFile = path.join(repoPath, '.pampax', 'token-budget.json');
+    if (fs.existsSync(budgetFile)) {
+      const config = JSON.parse(fs.readFileSync(budgetFile, 'utf8'));
+      if (config.model === model || !config.model) {
+        return config.budget;
+      }
+    }
+  } catch (error) {
+    logger.debug('Failed to load token budget', { error: error.message });
+  }
+  return null;
+}
+
+/**
+ * Calculate token usage for search results
+ */
+function calculateTokenUsage(results, tokenizer) {
+  let totalTokens = 0;
+  const itemBreakdown = [];
+
+  results.forEach((result, index) => {
+    const itemTokens = tokenizer.countTokens(
+      JSON.stringify({
+        path: result.path,
+        content: result.content || '',
+        metadata: result.metadata || {}
+      })
+    );
+    
+    totalTokens += itemTokens;
+    itemBreakdown.push({
+      index: index + 1,
+      path: result.path,
+      tokens: itemTokens
+    });
+  });
+
+  return {
+    total: totalTokens,
+    breakdown: itemBreakdown,
+    average: Math.round(totalTokens / results.length)
+  };
+}
+
+/**
+ * Build scope filters from command line options
+ */
+export function buildScopeFiltersFromOptions(options, repoPath) {
+  const scopeFilters = {};
+  let pack = null;
+
+  // Handle context packs
+  if (options.pack) {
+    try {
+      const packPath = path.resolve(repoPath, options.pack);
+      if (fs.existsSync(packPath)) {
+        pack = JSON.parse(fs.readFileSync(packPath, 'utf8'));
+        if (pack.scope) {
+          Object.assign(scopeFilters, pack.scope);
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to load context pack', { pack: options.pack, error: error.message });
+    }
+  }
+
+  // Apply CLI options with normalization
+  if (options.path_glob) {
+    scopeFilters.path_glob = Array.isArray(options.path_glob) 
+      ? options.path_glob 
+      : [options.path_glob];
+  }
+
+  if (options.tags) {
+    scopeFilters.tags = Array.isArray(options.tags) 
+      ? options.tags.map(tag => tag.toLowerCase())
+      : [options.tags.toLowerCase()];
+  }
+
+  if (options.lang) {
+    scopeFilters.lang = Array.isArray(options.lang)
+      ? options.lang.map(lang => lang.toLowerCase())
+      : [options.lang.toLowerCase()];
+  }
+
+  if (options.exclude) {
+    scopeFilters.exclude = options.exclude;
+  }
+
+  // Handle boolean conversions
+  if (options.hybrid !== undefined) {
+    scopeFilters.hybrid = options.hybrid === 'on' || options.hybrid === true;
+  }
+
+  if (options.bm25 !== undefined) {
+    scopeFilters.bm25 = options.bm25 === 'on' || options.bm25 === true;
+  }
+
+  if (options.reranker) {
+    // Validate reranker value - only allow known providers
+    const validRerankers = ['transformers', 'openai', 'cohere', 'rrf', 'off'];
+    scopeFilters.reranker = validRerankers.includes(options.reranker) ? options.reranker : 'off';
+  }
+
+  // Set default values for missing options
+  if (scopeFilters.reranker === undefined) {
+    scopeFilters.reranker = 'off';
+  }
+  if (scopeFilters.hybrid === undefined) {
+    scopeFilters.hybrid = true;
+  }
+  if (scopeFilters.bm25 === undefined) {
+    scopeFilters.bm25 = true;
+  }
+
+  return { scope: scopeFilters, pack };
+}
 
 /**
  * Enhanced search command with FTS support
@@ -24,11 +148,20 @@ export async function searchCommand(query, options = {}) {
   const verbose = options.verbose || false;
   const dbPath = options.db || path.join(repoPath, '.pampax/pampax.sqlite');
   
+  // Token-aware options
+  const targetModel = options.targetModel || options.model || 'default';
+  const tokenReport = options.tokenReport || false;
+  const tokenBudget = options.tokenBudget ? parseInt(options.tokenBudget) : null;
+  
   // Intent-aware options
   const showIntent = options.intent || false;
   const showPolicy = options.policy || false;
   const explainIntent = options.explainIntent || false;
   const forceIntent = options.forceIntent || null;
+
+  // Graph expansion options
+  const callers = options.callers ? parseInt(options.callers) : 0;
+  const callees = options.callees ? parseInt(options.callees) : 0;
 
   // Progress setup
   const isTTY = process.stdout.isTTY && !json;
@@ -90,11 +223,19 @@ export async function searchCommand(query, options = {}) {
     
     logger.debug('Search intent classified', { intent: intent.intent, confidence: intent.confidence });
 
+    // Initialize tokenizer for token calculations
+    const tokenizer = createTokenizer(targetModel);
+    
+    // Load session token budget or use command line option
+    const sessionBudget = loadTokenBudget(repoPath, targetModel) || tokenBudget;
+    const effectiveBudget = sessionBudget || 4000;
+    
     // Get search context for policy evaluation
     const searchContext = {
       repo: path.basename(repoPath),
       queryLength: query.length,
-      budget: options.tokenBudget || 4000,
+      budget: effectiveBudget,
+      model: targetModel,
       language: options.lang?.[0]
     };
 
@@ -138,6 +279,54 @@ export async function searchCommand(query, options = {}) {
     } else {
       // Fallback to original search results
       results = searchResults.slice(0, limit);
+    }
+
+    // Apply graph expansion if requested
+    let graphExpansion = null;
+    if (callers > 0 || callees > 0) {
+      try {
+        // Import graph traversal engine
+        const { BFSTraversalEngine } = await import('../../graph/graph-traversal.js');
+        const traversalEngine = new BFSTraversalEngine(db, effectiveBudget);
+        
+        // Extract symbols from search results
+        const symbolIds = results
+          .filter(result => result.metadata?.spanId)
+          .map(result => result.metadata.spanId);
+        
+        if (symbolIds.length > 0) {
+          // Determine expansion depth
+          const maxDepth = Math.max(callers, callees);
+          const edgeTypes = [];
+          
+          if (callers > 0) edgeTypes.push('call');
+          if (callees > 0) edgeTypes.push('call'); // For simplicity, use 'call' for both directions
+          
+          // Perform graph expansion
+          const expansion = {
+            query: `Graph expansion for search: ${query}`,
+            start_symbols: symbolIds,
+            max_depth: maxDepth,
+            edge_types: edgeTypes,
+            expansion_strategy: 'quality-first',
+            token_budget: Math.floor(effectiveBudget * 0.3) // Use 30% of budget for expansion
+          };
+          
+          graphExpansion = await traversalEngine.expandGraph(expansion);
+          
+          if (verbose && !json) {
+            console.log(`\n${chalk.blue('=== Graph Expansion ===')}`);
+            console.log(`Expanded ${symbolIds.length} symbols to ${graphExpansion.visited_nodes.size} nodes`);
+            console.log(`Found ${graphExpansion.edges.length} additional relationships`);
+            console.log(`Expansion depth: ${graphExpansion.expansion_depth}/${maxDepth}`);
+          }
+        }
+      } catch (error) {
+        logger.warn('Graph expansion failed', { error: error.message });
+        if (verbose && !json) {
+          console.log(`\n${chalk.yellow('⚠️  Graph expansion failed:')} ${error.message}`);
+        }
+      }
     }
 
     const duration = Date.now() - startTime;
@@ -194,11 +383,18 @@ export async function searchCommand(query, options = {}) {
       console.log('');
     }
 
+    // Calculate token usage if requested
+    let tokenUsage = null;
+    if (tokenReport) {
+      tokenUsage = calculateTokenUsage(results, tokenizer);
+    }
+
     // Format and output results
     if (json) {
-      console.log(JSON.stringify({
+      const output = {
         success: true,
         query,
+        model: targetModel,
         intent: showIntent || explainIntent ? {
           type: intent.intent,
           confidence: intent.confidence,
@@ -238,10 +434,35 @@ export async function searchCommand(query, options = {}) {
             symbolRank: result.symbolRank
           }
         })),
+        graphExpansion: graphExpansion ? {
+          callers: callers,
+          callees: callees,
+          visitedNodes: Array.from(graphExpansion.visited_nodes),
+          edgesFound: graphExpansion.edges.length,
+          expansionDepth: graphExpansion.expansion_depth,
+          tokensUsed: graphExpansion.tokens_used,
+          truncated: graphExpansion.truncated
+        } : undefined,
         totalResults: results.length,
         durationMs: duration,
         databasePath: dbPath
-      }, null, 2));
+      };
+
+      // Add token report if requested
+      if (tokenReport && tokenUsage) {
+        output.tokenReport = {
+          budget: effectiveBudget,
+          estimated: tokenUsage.total,
+          actual: tokenUsage.total,
+          model: targetModel,
+          usagePercentage: Math.round((tokenUsage.total / effectiveBudget) * 100),
+          averageTokensPerResult: tokenUsage.average,
+          contextSize: tokenizer.getContextSize(),
+          breakdown: verbose ? tokenUsage.breakdown : undefined
+        };
+      }
+
+      console.log(JSON.stringify(output, null, 2));
     } else {
       if (results.length === 0) {
         console.log(`No results found for: "${query}"`);
@@ -275,9 +496,39 @@ export async function searchCommand(query, options = {}) {
         console.log('');
       });
 
+      // Show token report if requested
+      if (tokenReport && tokenUsage) {
+        const usagePercentage = Math.round((tokenUsage.total / effectiveBudget) * 100);
+        const usageColor = usagePercentage > 90 ? chalk.red : usagePercentage > 70 ? chalk.yellow : chalk.green;
+        
+        console.log(`\n${chalk.blue('=== Token Usage Report ===')}`);
+        console.log(`Model: ${chalk.yellow(targetModel)}`);
+        console.log(`Budget: ${chalk.cyan(effectiveBudget.toLocaleString())} tokens`);
+        console.log(`Used: ${usageColor(tokenUsage.total.toLocaleString())} tokens (${usagePercentage}%)`);
+        console.log(`Average per result: ${chalk.yellow(tokenUsage.average.toLocaleString())} tokens`);
+        console.log(`Context Size: ${chalk.blue(tokenizer.getContextSize().toLocaleString())} tokens`);
+        
+        if (usagePercentage > 90) {
+          console.log(`${chalk.red('⚠️  Warning: High token usage! Consider reducing results or budget.')}`);
+        } else if (usagePercentage < 20) {
+          console.log(`${chalk.blue('💡 Tip: Low usage - you could increase results for more context.')}`);
+        }
+        
+        if (verbose && tokenUsage.breakdown.length > 0) {
+          console.log(`\n${chalk.blue('Token Breakdown:')}`);
+          tokenUsage.breakdown.forEach(item => {
+            const percentage = Math.round((item.tokens / tokenUsage.total) * 100);
+            console.log(`  ${item.index}. ${chalk.cyan(item.path)}: ${chalk.yellow(item.tokens)} tokens (${percentage}%)`);
+          });
+        }
+      }
+
       if (verbose) {
-        console.log(`Search completed in ${duration}ms`);
+        console.log(`\nSearch completed in ${duration}ms`);
         console.log(`Database: ${dbPath}`);
+        if (sessionBudget) {
+          console.log(`Session Budget: ${chalk.cyan(sessionBudget.toLocaleString())} tokens`);
+        }
       }
     }
 
@@ -357,12 +608,16 @@ export function configureSearchCommand(program) {
     .option('--include-content', 'Include content in results')
     .option('--json', 'Output in JSON format')
     .option('--verbose', 'Verbose output')
-    .option('--token-budget <num>', 'Token budget for search optimization', '4000')
+    .option('--target-model <model>', 'Target model for tokenization (gpt-4, gpt-3.5-turbo, claude-3, etc.)', 'default')
+    .option('--token-budget <num>', 'Token budget for search optimization')
+    .option('--token-report', 'Show detailed token usage information')
     .option('--no-enhanced-search', 'Disable intent-aware search optimization')
     .option('--intent', 'Show classified intent information')
     .option('--policy', 'Show applied policy configuration')
     .option('--explain-intent', 'Show detailed intent classification explanation')
     .option('--force-intent <type>', 'Force specific intent type (symbol|config|api|incident|search)')
+    .option('--callers <num>', 'Include symbol callers in results (depth 1-3)', '0')
+    .option('--callees <num>', 'Include symbol callees in results (depth 1-3)', '0')
     .action(searchCommand);
 
   // Add FTS subcommand

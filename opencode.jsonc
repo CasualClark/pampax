@@ -90,7 +90,7 @@
             },
         },
     },
-    "theme": "oat-latte",
+    "theme": "deep-sea-teal",
     "autoupdate": true,
     "share": "manual",
     "permission": {
@@ -165,7 +165,6 @@
         ".opencode/prompts/*.md",
         ".opencode/command/*.md",
         ".opencode/agent/*.md",
-        ".opencode/rules/*.md",
     ],
     "command": {
         "analyze-performance": {

@@ -3,5 +3,12 @@
   "treesitter": { "enabled": true },
   "scip": { "read": true },
   "vectors": { "sqlite_vec": true, "pgvector": false },
-  "ui": { "json": false, "tty": true }
+  "ui": { "json": false, "tty": true },
+  "graph": { 
+    "enabled": true,
+    "bfs_traversal": true,
+    "code_neighbors": true,
+    "token_guard": true,
+    "caching": true
+  }
 }

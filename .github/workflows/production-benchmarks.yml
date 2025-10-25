@@ -1,0 +1,354 @@
+name: Production Benchmarks
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      corpus_size:
+        description: 'Corpus size to test'
+        required: false
+        default: 'medium'
+        type: choice
+        options:
+          - small
+          - medium
+          - large
+      run_regression_detection:
+        description: 'Enable regression detection'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  benchmark:
+    name: Production Benchmarks
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [20.x]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for regression detection
+      
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
+      
+      - name: Run unit tests
+        run: npm test
+      
+      - name: Download baseline data
+        id: baseline
+        uses: actions/cache@v4
+        with:
+          path: ~/.pampax-benchmark-baseline
+          key: benchmark-baseline-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            benchmark-baseline-${{ runner.os }}-
+            benchmark-baseline-
+      
+      - name: Create baseline directory
+        if: steps.baseline.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.pampax-benchmark-baseline
+          echo "BASELINE_CREATED=true" >> $GITHUB_ENV
+      
+      - name: Set corpus size
+        run: |
+          CORPUS_SIZE="${{ github.event.inputs.corpus_size || 'medium' }}"
+          echo "CORPUS_SIZE=$CORPUS_SIZE" >> $GITHUB_ENV
+      
+      - name: Run production benchmarks
+        id: benchmarks
+        run: |
+          echo "🚀 Running production benchmarks for $CORPUS_SIZE corpus"
+          node test/benchmarks/production-integration.js > benchmark-results.json
+          
+          # Extract summary for output
+          echo "BENCHMARK_SUMMARY<<EOF" >> $GITHUB_OUTPUT
+          cat benchmark-results.json | jq -r '.summary | "Passed: \(.passedTests | length), Failed: \(.failedTests | length), All Passed: \(.allPassed)"' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Store results for regression detection
+          cp benchmark-results.json ~/.pampax-benchmark-baseline/latest-results.json
+      
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ matrix.node-version }}
+          path: |
+            benchmark-results.json
+            ~/.pampax-benchmark-baseline/
+          retention-days: 30
+      
+      - name: Regression Detection
+        if: github.event.inputs.run_regression_detection != 'false' && steps.baseline.outputs.cache-hit == 'true'
+        run: |
+          echo "🔍 Running regression detection..."
+          node test/benchmarks/regression-detector.js \
+            --baseline ~/.pampax-benchmark-baseline/latest-results.json \
+            --current benchmark-results.json \
+            --threshold 0.10 \
+            --output regression-report.json
+      
+      - name: Upload regression report
+        if: github.event.inputs.run_regression_detection != 'false' && steps.baseline.outputs.cache-hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report-${{ matrix.node-version }}
+          path: regression-report.json
+          retention-days: 30
+      
+      - name: Comment on PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const results = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
+              const summary = results.summary;
+              
+              let comment = `## 📊 Production Benchmark Results\n\n`;
+              comment += `**Corpus Size:** ${process.env.CORPUS_SIZE}\n\n`;
+              comment += `### Summary\n`;
+              comment += `- **Status:** ${summary.allPassed ? '✅ PASSED' : '❌ FAILED'}\n`;
+              comment += `- **Passed Tests:** ${summary.passedTests.length}\n`;
+              comment += `- **Failed Tests:** ${summary.failedTests.length}\n\n`;
+              
+              if (summary.failedTests.length > 0) {
+                comment += `### ❌ Failed Tests\n`;
+                summary.failedTests.forEach(test => {
+                  comment += `- ${test}\n`;
+                });
+                comment += '\n';
+              }
+              
+              if (summary.warnings.length > 0) {
+                comment += `### ⚠️ Warnings\n`;
+                summary.warnings.forEach(warning => {
+                  comment += `- ${warning}\n`;
+                });
+                comment += '\n';
+              }
+              
+              // Add performance metrics
+              if (results.results && results.results.medium) {
+                const medium = results.results.medium;
+                comment += `### 📈 Performance Metrics (Medium Corpus)\n\n`;
+                
+                if (medium.hybridSearch) {
+                  comment += `**Hybrid Search:**\n`;
+                  comment += `- Cold p50: ${medium.hybridSearch.coldStats.p50.toFixed(2)}ms\n`;
+                  comment += `- Cold p95: ${medium.hybridSearch.coldStats.p95.toFixed(2)}ms\n`;
+                  comment += `- Warm p50: ${medium.hybridSearch.warmStats.p50.toFixed(2)}ms\n`;
+                  comment += `- Warm p95: ${medium.hybridSearch.warmStats.p95.toFixed(2)}ms\n\n`;
+                }
+                
+                if (medium.bundleAssembly) {
+                  comment += `**Bundle Assembly:**\n`;
+                  comment += `- Cold p50: ${medium.bundleAssembly.coldStats.p50.toFixed(2)}ms\n`;
+                  comment += `- Cold p95: ${medium.bundleAssembly.coldStats.p95.toFixed(2)}ms\n`;
+                  comment += `- Warm p50: ${medium.bundleAssembly.warmStats.p50.toFixed(2)}ms\n`;
+                  comment += `- Warm p95: ${medium.bundleAssembly.warmStats.p95.toFixed(2)}ms\n\n`;
+                }
+                
+                if (medium.memoryUsage) {
+                  comment += `**Memory Usage:**\n`;
+                  comment += `- Steady State: ${(medium.memoryUsage.steadyStats.mean / 1024 / 1024).toFixed(2)}MB\n`;
+                  comment += `- Peak: ${(medium.memoryUsage.peakStats.mean / 1024 / 1024).toFixed(2)}MB\n\n`;
+                }
+                
+                if (medium.cacheHitRate) {
+                  comment += `**Cache Hit Rate:** ${(medium.cacheHitRate.overallHitRate * 100).toFixed(1)}%\n\n`;
+                }
+              }
+              
+              // Check for regression report
+              let regressionInfo = '';
+              try {
+                const regression = JSON.parse(fs.readFileSync('regression-report.json', 'utf8'));
+                if (regression.regressions.length > 0) {
+                  regressionInfo = `\n### 🚨 Performance Regressions Detected\n`;
+                  regression.regressions.forEach(reg => {
+                    regressionInfo += `- ${reg.metric}: ${reg.change > 0 ? '+' : ''}${(reg.change * 100).toFixed(1)}% (${reg.oldValue} → ${reg.newValue})\n`;
+                  });
+                }
+              } catch (e) {
+                // No regression report
+              }
+              
+              comment += regressionInfo;
+              comment += `\n---\n*Results generated by PAMPAX Production Benchmark Suite*`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+              
+            } catch (error) {
+              console.error('Error creating PR comment:', error);
+            }
+      
+      - name: Check benchmark status
+        run: |
+          if [ -f benchmark-results.json ]; then
+            PASSED=$(cat benchmark-results.json | jq -r '.summary.allPassed')
+            if [ "$PASSED" = "false" ]; then
+              echo "❌ Production benchmarks failed"
+              exit 1
+            else
+              echo "✅ Production benchmarks passed"
+            fi
+          else
+            echo "❌ Benchmark results not found"
+            exit 1
+          fi
+      
+      - name: Store results for trends
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "📈 Storing results for trend analysis..."
+          mkdir -p benchmark-trends
+          cp benchmark-results.json "benchmark-trends/results-$(date +%Y%m%d-%H%M%S).json"
+          
+          # Keep only last 30 results
+          cd benchmark-trends
+          ls -t | tail -n +31 | xargs -r rm
+      
+      - name: Upload trend data
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-trends
+          path: benchmark-trends/
+          retention-days: 90
+
+  memory-leak-detection:
+    name: Memory Leak Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run memory leak detection
+        run: |
+          echo "🧠 Running memory leak detection..."
+          node test/benchmarks/memory-leak-detector.js > memory-leak-report.json
+      
+      - name: Upload memory leak report
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-leak-report
+          path: memory-leak-report.json
+          retention-days: 30
+      
+      - name: Check for memory leaks
+        run: |
+          if [ -f memory-leak-report.json ]; then
+            LEAKS=$(cat memory-leak-report.json | jq -r '.memoryLeaksDetected')
+            if [ "$LEAKS" = "true" ]; then
+              echo "❌ Memory leaks detected"
+              exit 1
+            else
+              echo "✅ No memory leaks detected"
+            fi
+          else
+            echo "❌ Memory leak report not found"
+            exit 1
+          fi
+
+  performance-regression-check:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Get benchmark results from main branch
+        id: main-results
+        run: |
+          git fetch origin main
+          git checkout origin/main -- test/benchmarks/baseline-results.json 2>/dev/null || echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
+      
+      - name: Run current benchmarks
+        run: |
+          node test/benchmarks/production-integration.js > current-results.json
+      
+      - name: Compare with baseline
+        if: env.BASELINE_EXISTS != 'false'
+        run: |
+          node test/benchmarks/performance-comparator.js \
+            --baseline test/benchmarks/baseline-results.json \
+            --current current-results.json \
+            --threshold 0.10 \
+            --output comparison-report.json
+      
+      - name: Upload comparison report
+        if: env.BASELINE_EXISTS != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-comparison
+          path: comparison-report.json
+          retention-days: 30
+      
+      - name: Fail on significant regression
+        if: env.BASELINE_EXISTS != 'false'
+        run: |
+          SIGNIFICANT_REGRESSIONS=$(cat comparison-report.json | jq -r '.significantRegressions | length')
+          if [ "$SIGNIFICANT_REGRESSIONS" -gt 0 ]; then
+            echo "❌ Significant performance regressions detected: $SIGNIFICANT_REGRESSIONS"
+            cat comparison-report.json | jq -r '.significantRegressions[] | "- \(.metric): \(.changePercent)% regression"'
+            exit 1
+          else
+            echo "✅ No significant performance regressions detected"
+          fi

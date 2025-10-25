@@ -375,6 +375,73 @@ export class MemoryOperations {
     });
   }
 
+  async getRecentInteractions(fromDays = 30) {
+    const cutoffTimestamp = Date.now() - (fromDays * 24 * 60 * 60 * 1000);
+    
+    return new Promise((resolve, reject) => {
+      this.db.all(`
+        SELECT 
+          i.id,
+          i.session_id,
+          i.ts,
+          i.query,
+          i.bundle_id,
+          i.satisfied,
+          i.notes,
+          s.tool as tool,
+          s.user,
+          s.repo,
+          s.branch
+        FROM interaction i
+        LEFT JOIN session s ON i.session_id = s.id
+        WHERE i.ts >= ? 
+        ORDER BY i.ts DESC
+      `, [cutoffTimestamp], (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          // Parse and normalize interaction data
+          const normalizedRows = (rows || []).map(row => {
+            // Try to parse notes if available (this contains the JSON data)
+            let notesData = {};
+            if (row.notes) {
+              try {
+                notesData = JSON.parse(row.notes);
+              } catch (e) {
+                console.warn('Failed to parse notes data:', e);
+              }
+            }
+            
+            return {
+              id: row.id,
+              sessionId: row.session_id,
+              timestamp: row.ts,
+              query: row.query,
+              bundleId: row.bundle_id,
+              satisfied: row.satisfied === 1,
+              tool: row.tool,
+              user: row.user,
+              repo: row.repo,
+              branch: row.branch,
+              // Extract data from notes JSON
+              ...notesData,
+              // Ensure required fields for learning
+              intent: notesData.intent || 'search',
+              timeToFix: notesData.timeToFix || null,
+              tokenUsage: notesData.tokenUsage || null,
+              seedWeights: notesData.seedWeights || {},
+              responseTime: notesData.responseTime || null,
+              resultCount: notesData.resultCount || 0,
+              userFeedback: notesData.userFeedback || null
+            };
+          });
+          
+          resolve(normalizedRows);
+        }
+      });
+    });
+  }
+
   // Memory link operations
   async createLink(link) {
     try {

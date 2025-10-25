@@ -1,0 +1,671 @@
+import { logger } from '../config/logger.js';
+import { MemoryOperations } from '../storage/memory-operations.js';
+import { LearningIntegration, type LearningIntegrationConfig, type IntegrationResult } from './integration.js';
+import { OutcomeAnalyzer, type OutcomeSignal, type SatisfactionMetrics } from './outcome-analyzer.js';
+import { WeightOptimizer } from './weight-optimizer.js';
+import { PolicyTuner } from './policy-tuner.js';
+import { SignatureCache } from './signature-cache.js';
+import { policyGate } from '../policy/policy-gate.js';
+import { intentClassifier, type IntentResult } from '../intent/intent-classifier.js';
+
+/**
+ * Workflow step configuration
+ */
+export interface WorkflowStep {
+  name: string;
+  enabled: boolean;
+  timeout: number; // milliseconds
+  retryCount: number;
+  required: boolean; // If true, workflow fails if this step fails
+}
+
+/**
+ * Workflow configuration
+ */
+export interface LearningWorkflowConfig {
+  integration: LearningIntegrationConfig;
+  steps: {
+    signalCollection: WorkflowStep;
+    outcomeAnalysis: WorkflowStep;
+    weightOptimization: WorkflowStep;
+    policyTuning: WorkflowStep;
+    cacheUpdate: WorkflowStep;
+  };
+  schedules: {
+    analysis: string; // cron pattern
+    optimization: string; // cron pattern
+    cleanup: string; // cron pattern
+  };
+  notifications: {
+    onSuccess: boolean;
+    onFailure: boolean;
+    onSignificantImprovement: number; // threshold
+  };
+}
+
+/**
+ * Workflow execution context
+ */
+export interface WorkflowContext {
+  sessionId: string;
+  startTime: number;
+  signals: OutcomeSignal[];
+  metrics?: SatisfactionMetrics;
+  results: Record<string, any>;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Workflow execution result
+ */
+export interface WorkflowResult {
+  success: boolean;
+  sessionId: string;
+  executionTime: number;
+  steps: Record<string, {
+    success: boolean;
+    duration: number;
+    error?: string;
+  }>;
+  summary: {
+    signalsProcessed: number;
+    optimizationsApplied: number;
+    improvement: number;
+    errors: number;
+    warnings: number;
+  };
+  context: WorkflowContext;
+}
+
+/**
+ * Learning Workflow Orchestrator - Manages end-to-end learning processes
+ * 
+ * This class orchestrates the complete learning workflow from signal collection
+ * through analysis, optimization, and policy updates. It provides robust error
+ * handling, retry logic, and comprehensive monitoring.
+ */
+export class LearningWorkflow {
+  private memoryOps: MemoryOperations;
+  private integration: LearningIntegration;
+  private config: LearningWorkflowConfig;
+  private activeWorkflows: Map<string, WorkflowContext> = new Map();
+  private workflowHistory: WorkflowResult[] = [];
+  private maxHistorySize: number = 100;
+
+  constructor(memoryOps: MemoryOperations, config: Partial<LearningWorkflowConfig> = {}) {
+    this.memoryOps = memoryOps;
+    
+    // Default configuration
+    this.config = {
+      integration: {
+        enabled: true,
+        analysisInterval: 60 * 60 * 1000, // 1 hour
+        minSignalsForOptimization: 10,
+        cacheEnabled: true,
+        autoApplyOptimizations: true,
+        performanceTracking: true,
+        rollbackOnFailure: true,
+        ...config.integration
+      },
+      steps: {
+        signalCollection: {
+          name: 'Signal Collection',
+          enabled: true,
+          timeout: 5 * 60 * 1000, // 5 minutes
+          retryCount: 2,
+          required: true
+        },
+        outcomeAnalysis: {
+          name: 'Outcome Analysis',
+          enabled: true,
+          timeout: 10 * 60 * 1000, // 10 minutes
+          retryCount: 2,
+          required: true
+        },
+        weightOptimization: {
+          name: 'Weight Optimization',
+          enabled: true,
+          timeout: 15 * 60 * 1000, // 15 minutes
+          retryCount: 1,
+          required: false
+        },
+        policyTuning: {
+          name: 'Policy Tuning',
+          enabled: true,
+          timeout: 15 * 60 * 1000, // 15 minutes
+          retryCount: 1,
+          required: false
+        },
+        cacheUpdate: {
+          name: 'Cache Update',
+          enabled: true,
+          timeout: 2 * 60 * 1000, // 2 minutes
+          retryCount: 3,
+          required: false
+        }
+      },
+      schedules: {
+        analysis: '0 */6 * * *', // Every 6 hours
+        optimization: '0 2 * * *', // Daily at 2 AM
+        cleanup: '0 3 * * 0', // Weekly on Sunday at 3 AM
+        ...config.schedules
+      },
+      notifications: {
+        onSuccess: false,
+        onFailure: true,
+        onSignificantImprovement: 0.05, // 5%
+        ...config.notifications
+      },
+      ...config
+    };
+
+    // Initialize integration
+    this.integration = new LearningIntegration(memoryOps, this.config.integration);
+
+    logger.info('LearningWorkflow initialized', {
+      stepsEnabled: Object.values(this.config.steps).filter(s => s.enabled).length,
+      autoApply: this.config.integration.autoApplyOptimizations
+    }, 'learning-workflow');
+  }
+
+  /**
+   * Start the learning workflow orchestrator
+   */
+  async start(): Promise<void> {
+    try {
+      // Start the integration
+      await this.integration.start();
+      
+      // Setup scheduled workflows
+      this.setupScheduledWorkflows();
+      
+      logger.info('Learning workflow started', {
+        schedules: this.config.schedules
+      }, 'learning-workflow');
+    } catch (error) {
+      logger.error('Failed to start learning workflow', {
+        error: error instanceof Error ? error.message : String(error)
+      }, 'learning-workflow');
+      throw error;
+    }
+  }
+
+  /**
+   * Stop the learning workflow orchestrator
+   */
+  async stop(): Promise<void> {
+    try {
+      // Stop the integration
+      await this.integration.stop();
+      
+      // Wait for active workflows to complete or timeout
+      await this.waitForActiveWorkflows(30 * 1000); // 30 seconds
+      
+      logger.info('Learning workflow stopped', {
+        activeWorkflows: this.activeWorkflows.size,
+        historySize: this.workflowHistory.length
+      }, 'learning-workflow');
+    } catch (error) {
+      logger.error('Failed to stop learning workflow', {
+        error: error instanceof Error ? error.message : String(error)
+      }, 'learning-workflow');
+      throw error;
+    }
+  }
+
+  /**
+   * Execute the complete learning workflow
+   */
+  async executeWorkflow(fromDays: number = 7): Promise<WorkflowResult> {
+    const sessionId = this.generateSessionId();
+    const startTime = Date.now();
+    
+    const context: WorkflowContext = {
+      sessionId,
+      startTime,
+      signals: [],
+      results: {},
+      errors: [],
+      warnings: []
+    };
+
+    this.activeWorkflows.set(sessionId, context);
+
+    try {
+      logger.info('Starting learning workflow execution', {
+        sessionId,
+        fromDays
+      }, 'learning-workflow');
+
+      const steps = this.config.steps;
+      const stepResults: Record<string, any> = {};
+
+      // Step 1: Signal Collection
+      if (steps.signalCollection.enabled) {
+        const result = await this.executeStep(
+          'signalCollection',
+          () => this.collectSignals(fromDays),
+          context
+        );
+        stepResults.signalCollection = result;
+        if (!result.success && steps.signalCollection.required) {
+          throw new Error(`Required step 'signalCollection' failed: ${result.error}`);
+        }
+      }
+
+      // Step 2: Outcome Analysis
+      if (steps.outcomeAnalysis.enabled && context.signals.length > 0) {
+        const result = await this.executeStep(
+          'outcomeAnalysis',
+          () => this.analyzeOutcomes(context.signals),
+          context
+        );
+        stepResults.outcomeAnalysis = result;
+        if (!result.success && steps.outcomeAnalysis.required) {
+          throw new Error(`Required step 'outcomeAnalysis' failed: ${result.error}`);
+        }
+      }
+
+      // Step 3: Weight Optimization
+      if (steps.weightOptimization.enabled && context.signals.length >= this.config.integration.minSignalsForOptimization) {
+        const result = await this.executeStep(
+          'weightOptimization',
+          () => this.optimizeWeights(context.signals),
+          context
+        );
+        stepResults.weightOptimization = result;
+      }
+
+      // Step 4: Policy Tuning
+      if (steps.policyTuning.enabled && context.signals.length >= this.config.integration.minSignalsForOptimization) {
+        const result = await this.executeStep(
+          'policyTuning',
+          () => this.tunePolicies(context.signals),
+          context
+        );
+        stepResults.policyTuning = result;
+      }
+
+      // Step 5: Cache Update
+      if (steps.cacheUpdate.enabled) {
+        const result = await this.executeStep(
+          'cacheUpdate',
+          () => this.updateCache(context),
+          context
+        );
+        stepResults.cacheUpdate = result;
+      }
+
+      const executionTime = Date.now() - startTime;
+      const workflowResult: WorkflowResult = {
+        success: context.errors.length === 0,
+        sessionId,
+        executionTime,
+        steps: stepResults,
+        summary: {
+          signalsProcessed: context.signals.length,
+          optimizationsApplied: this.countOptimizations(context.results),
+          improvement: this.calculateImprovement(context.results),
+          errors: context.errors.length,
+          warnings: context.warnings.length
+        },
+        context
+      };
+
+      // Store in history
+      this.addToHistory(workflowResult);
+
+      // Send notifications if configured
+      await this.sendNotifications(workflowResult);
+
+      logger.info('Learning workflow completed', {
+        sessionId,
+        success: workflowResult.success,
+        executionTime,
+        signalsProcessed: context.signals.length,
+        optimizationsApplied: workflowResult.summary.optimizationsApplied
+      }, 'learning-workflow');
+
+      return workflowResult;
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      context.errors.push(errorMessage);
+      
+      const workflowResult: WorkflowResult = {
+        success: false,
+        sessionId,
+        executionTime,
+        steps: {},
+        summary: {
+          signalsProcessed: context.signals.length,
+          optimizationsApplied: 0,
+          improvement: 0,
+          errors: context.errors.length,
+          warnings: context.warnings.length
+        },
+        context
+      };
+
+      this.addToHistory(workflowResult);
+      await this.sendNotifications(workflowResult);
+
+      logger.error('Learning workflow failed', {
+        sessionId,
+        error: errorMessage,
+        executionTime,
+        signalsProcessed: context.signals.length
+      }, 'learning-workflow');
+
+      return workflowResult;
+    } finally {
+      this.activeWorkflows.delete(sessionId);
+    }
+  }
+
+  /**
+   * Execute a single workflow step with timeout and retry logic
+   */
+  private async executeStep(
+    stepName: string,
+    stepFunction: () => Promise<any>,
+    context: WorkflowContext
+  ): Promise<{ success: boolean; duration: number; error?: string; result?: any }> {
+    const step = this.config.steps[stepName as keyof typeof this.config.steps];
+    const startTime = Date.now();
+    let lastError: string | undefined;
+
+    for (let attempt = 1; attempt <= step.retryCount + 1; attempt++) {
+      try {
+        logger.debug(`Executing workflow step: ${step.name}`, {
+          sessionId: context.sessionId,
+          attempt
+        }, 'learning-workflow');
+
+        // Execute with timeout
+        const result = await this.withTimeout(stepFunction(), step.timeout);
+        
+        const duration = Date.now() - startTime;
+        context.results[stepName] = result;
+        
+        logger.debug(`Workflow step completed: ${step.name}`, {
+          sessionId: context.sessionId,
+          attempt,
+          duration
+        }, 'learning-workflow');
+
+        return { success: true, duration, result };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        
+        logger.warn(`Workflow step failed: ${step.name}`, {
+          sessionId: context.sessionId,
+          attempt,
+          error: lastError
+        }, 'learning-workflow');
+
+        if (attempt <= step.retryCount) {
+          // Wait before retry (exponential backoff)
+          const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    context.errors.push(`Step ${step.name} failed after ${step.retryCount + 1} attempts: ${lastError}`);
+    
+    return { success: false, duration, error: lastError };
+  }
+
+  /**
+   * Collect signals from interactions
+   */
+  private async collectSignals(fromDays: number): Promise<OutcomeSignal[]> {
+    const outcomeAnalyzer = new OutcomeAnalyzer(this.memoryOps);
+    return await outcomeAnalyzer.analyzeInteractions(fromDays);
+  }
+
+  /**
+   * Analyze outcomes and compute metrics
+   */
+  private async analyzeOutcomes(signals: OutcomeSignal[]): Promise<SatisfactionMetrics> {
+    const outcomeAnalyzer = new OutcomeAnalyzer(this.memoryOps);
+    return await outcomeAnalyzer.computeSatisfactionMetrics(signals);
+  }
+
+  /**
+   * Optimize weights based on signals
+   */
+  private async optimizeWeights(signals: OutcomeSignal[]): Promise<any> {
+    const weightOptimizer = new WeightOptimizer();
+    const currentWeights = this.getCurrentWeights();
+    return await weightOptimizer.optimizeWeights(signals, currentWeights);
+  }
+
+  /**
+   * Tune policies based on signals
+   */
+  private async tunePolicies(signals: OutcomeSignal[]): Promise<any> {
+    const policyTuner = new PolicyTuner();
+    const currentPolicies = this.getCurrentPolicies();
+    return await policyTuner.tunePolicies(signals, currentPolicies);
+  }
+
+  /**
+   * Update cache with new learnings
+   */
+  private async updateCache(context: WorkflowContext): Promise<any> {
+    // This would update the signature cache with new patterns
+    // For now, return a placeholder result
+    return { cacheUpdated: true, patternsAdded: 0 };
+  }
+
+  /**
+   * Get workflow status and statistics
+   */
+  getStatus(): {
+    activeWorkflows: number;
+    historySize: number;
+    lastExecution?: WorkflowResult;
+    averageExecutionTime: number;
+    successRate: number;
+  } {
+    const successfulExecutions = this.workflowHistory.filter(r => r.success).length;
+    const averageExecutionTime = this.workflowHistory.length > 0
+      ? this.workflowHistory.reduce((sum, r) => sum + r.executionTime, 0) / this.workflowHistory.length
+      : 0;
+
+    return {
+      activeWorkflows: this.activeWorkflows.size,
+      historySize: this.workflowHistory.length,
+      lastExecution: this.workflowHistory[this.workflowHistory.length - 1],
+      averageExecutionTime,
+      successRate: this.workflowHistory.length > 0 ? successfulExecutions / this.workflowHistory.length : 0
+    };
+  }
+
+  /**
+   * Get workflow history
+   */
+  getHistory(limit?: number): WorkflowResult[] {
+    if (limit) {
+      return this.workflowHistory.slice(-limit);
+    }
+    return [...this.workflowHistory];
+  }
+
+  /**
+   * Execute a function with timeout
+   */
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Operation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      promise
+        .then(result => {
+          clearTimeout(timeout);
+          resolve(result);
+        })
+        .catch(error => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+    });
+  }
+
+  /**
+   * Setup scheduled workflow executions
+   */
+  private setupScheduledWorkflows(): void {
+    // This would setup cron jobs or similar scheduling mechanism
+    // For now, just log that scheduling would be setup
+    logger.info('Scheduled workflows configured', {
+      schedules: this.config.schedules
+    }, 'learning-workflow');
+  }
+
+  /**
+   * Wait for active workflows to complete
+   */
+  private async waitForActiveWorkflows(timeoutMs: number): Promise<void> {
+    const startTime = Date.now();
+    
+    while (this.activeWorkflows.size > 0 && Date.now() - startTime < timeoutMs) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    if (this.activeWorkflows.size > 0) {
+      logger.warn('Timeout waiting for active workflows to complete', {
+        activeCount: this.activeWorkflows.size
+      }, 'learning-workflow');
+    }
+  }
+
+  /**
+   * Generate unique session ID
+   */
+  private generateSessionId(): string {
+    return `workflow_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Get current weights from policy gate
+   */
+  private getCurrentWeights(): Record<string, Record<string, number>> {
+    const policies = policyGate.getAllPolicies();
+    const weights: Record<string, Record<string, number>> = {};
+
+    for (const [intentType, policy] of Object.entries(policies.default)) {
+      weights[intentType] = { ...policy.seedWeights };
+    }
+
+    return weights;
+  }
+
+  /**
+   * Get current policies from policy gate
+   */
+  private getCurrentPolicies(): Record<string, any> {
+    return policyGate.getAllPolicies().default;
+  }
+
+  /**
+   * Count optimizations applied in workflow results
+   */
+  private countOptimizations(results: Record<string, any>): number {
+    let count = 0;
+    
+    if (results.weightOptimization?.improvement > 0) count++;
+    if (results.policyTuning?.improvement > 0) count++;
+    if (results.cacheUpdate?.cacheUpdated) count++;
+    
+    return count;
+  }
+
+  /**
+   * Calculate overall improvement from workflow results
+   */
+  private calculateImprovement(results: Record<string, any>): number {
+    let improvement = 0;
+    
+    if (results.weightOptimization?.improvement) {
+      improvement += results.weightOptimization.improvement;
+    }
+    
+    if (results.policyTuning?.improvement) {
+      improvement += results.policyTuning.improvement;
+    }
+    
+    return improvement;
+  }
+
+  /**
+   * Add workflow result to history
+   */
+  private addToHistory(result: WorkflowResult): void {
+    this.workflowHistory.push(result);
+    
+    // Trim history if it exceeds max size
+    if (this.workflowHistory.length > this.maxHistorySize) {
+      this.workflowHistory = this.workflowHistory.slice(-this.maxHistorySize);
+    }
+  }
+
+  /**
+   * Send notifications based on workflow result
+   */
+  private async sendNotifications(result: WorkflowResult): Promise<void> {
+    try {
+      // Success notification
+      if (result.success && this.config.notifications.onSuccess) {
+        logger.info('Learning workflow completed successfully', {
+          sessionId: result.sessionId,
+          executionTime: result.executionTime,
+          signalsProcessed: result.summary.signalsProcessed
+        }, 'learning-workflow');
+      }
+
+      // Failure notification
+      if (!result.success && this.config.notifications.onFailure) {
+        logger.error('Learning workflow failed', {
+          sessionId: result.sessionId,
+          errors: result.context.errors,
+          executionTime: result.executionTime
+        }, 'learning-workflow');
+      }
+
+      // Significant improvement notification
+      if (result.success && result.summary.improvement >= this.config.notifications.onSignificantImprovement) {
+        logger.info('Significant improvement detected', {
+          sessionId: result.sessionId,
+          improvement: result.summary.improvement,
+          optimizationsApplied: result.summary.optimizationsApplied
+        }, 'learning-workflow');
+      }
+    } catch (error) {
+      logger.warn('Failed to send notifications', {
+        sessionId: result.sessionId,
+        error: error instanceof Error ? error.message : String(error)
+      }, 'learning-workflow');
+    }
+  }
+}
+
+// Export singleton instance for easy access
+let learningWorkflowInstance: LearningWorkflow | null = null;
+
+export function getLearningWorkflow(memoryOps: MemoryOperations, config?: Partial<LearningWorkflowConfig>): LearningWorkflow {
+  if (!learningWorkflowInstance) {
+    learningWorkflowInstance = new LearningWorkflow(memoryOps, config);
+  }
+  return learningWorkflowInstance;
+}
+
+export function resetLearningWorkflow(): void {
+  learningWorkflowInstance = null;
+}

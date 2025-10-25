@@ -113,3 +113,13 @@ test/test-implementations/*
 .npmignore
 PUBLISHING.md
 *.Identifier
+
+# Phase 7 and build artifacts
+*.tsbuildinfo
+dist/
+test-outcome-analyzer-*.sqlite-*
+temp-*/
+test/temp-*/
+
+# Environment files
+.env

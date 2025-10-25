@@ -1,9 +1,0 @@
-{
-  "logging": {
-    "level": "INFO"
-  },
-  "storage": {
-    "path": "/home/oakley/mcps/pampax/temp/bootstrap-test/.pampax",
-    "type": "sqlite"
-  }
-}

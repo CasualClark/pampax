@@ -602,4 +602,57 @@ export class Database {
     // For now, return null to indicate not available
     return null;
   }
+
+  // Convenience method for running SQL statements
+  async run(sql, params = []) {
+    await this.initialize();
+    
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve(this);
+      });
+    });
+  }
+
+  // Convenience method for getting all rows
+  async all(sql, params = []) {
+    await this.initialize();
+    
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  }
+
+  // Convenience method for getting single row
+  async get(sql, params = []) {
+    await this.initialize();
+    
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+
+  // Graph traversal methods
+  async getOutgoingEdges(nodeId, edgeTypes = []) {
+    await this.initialize();
+    
+    // This is a placeholder - would need actual graph edge tables
+    // For now, return empty array
+    return [];
+  }
+
+  async getIncomingEdges(nodeId, edgeTypes = []) {
+    await this.initialize();
+    
+    // This is a placeholder - would need actual graph edge tables
+    // For now, return empty array
+    return [];
+  }
 }

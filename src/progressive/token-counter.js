@@ -94,7 +94,7 @@ function fitToBudget(results, budget) {
   };
 }
 
-module.exports = {
+export {
   estimateTokens,
   countTokensInObject,
   TokenBudgetTracker,

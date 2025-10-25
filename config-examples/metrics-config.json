@@ -1,0 +1,30 @@
+{
+  "metrics": {
+    "enabled": true,
+    "sinks": [
+      {
+        "type": "stdout"
+      },
+      {
+        "type": "file",
+        "path": ".pampax/metrics.jsonl",
+        "bufferSize": 100,
+        "flushInterval": 5000
+      }
+    ],
+    "sampling": {
+      "default": { "rate": 1.0 },
+      "search_latency_ms": { "rate": 1.0 },
+      "context_assembly_latency_ms": { "rate": 1.0 },
+      "cache_operation": { "rate": 0.1 },
+      "high_frequency": { "rate": 0.01 }
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "jsonOutput": true,
+    "logToFile": false,
+    "persistErrors": true,
+    "errorHistorySize": 100
+  }
+}

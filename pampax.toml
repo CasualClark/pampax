@@ -1,0 +1,82 @@
+[logging]
+  level = "info"
+  format = "json"
+  output = "stdout"
+  max_file_size_mb = 100
+  enable_rotation = true
+  structured = true
+
+[metrics]
+  enabled = true
+  sink = "stdout"
+  sampling_rate = 0.1
+  export_interval_seconds = 60
+  labels = {}
+
+[cache]
+  enabled = true
+  ttl_seconds = 3600
+  max_size_mb = 500
+  cleanup_interval_minutes = 30
+  strategy = "lru"
+
+[performance]
+  query_timeout_ms = 5000
+  max_concurrent_searches = 10
+  sqlite_cache_size = 2000
+  chunk_size = 50
+  parallel_processing = true
+  memory_limit_mb = 1024
+
+[cli]
+  deterministic_output = true
+  color_output = "auto"
+  progress_bar = true
+  verbose_errors = false
+  interactive_mode = true
+
+[indexer]
+  max_file_size_mb = 10
+  exclude_patterns = [
+    "node_modules/**",
+    ".git/**",
+    "dist/**",
+    "build/**",
+    "*.min.js",
+    "*.min.css",
+    ".DS_Store",
+    "Thumbs.db",
+  ]
+  include_patterns = [
+    "**/*.{js,ts,jsx,tsx,py,java,cpp,c,h,hpp,go,rs,php,rb,swift,kt,dart,scala,hs,ml,lua,elixir,sh,bash,zsh,fish}",
+    "**/*.md",
+    "**/*.txt",
+    "**/*.json",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.toml",
+    "**/*.xml",
+    "**/*.sql",
+  ]
+  follow_symlinks = false
+  respect_gitignore = true
+
+[storage]
+  type = "sqlite"
+  path = ".pampax"
+  connection_pool_size = 10
+  backup_enabled = true
+  backup_interval_hours = 24
+
+[features]
+  learning = true
+  analytics = true
+  policy_optimization = true
+  experimental_features = false
+  debug_mode = false
+
+[security]
+  encrypt_storage = false
+  access_log_enabled = true
+  rate_limiting = false
+  max_requests_per_minute = 1000
